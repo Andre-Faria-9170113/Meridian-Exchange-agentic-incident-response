@@ -1,0 +1,9 @@
+{
+  "tickets": {
+    "search_issues": "71cf8a15117b",
+    "get_issue": "4717cdb1bddc"
+  },
+  "monitoring": {
+    "list_alerts": "51e212008981"
+  }
+}
