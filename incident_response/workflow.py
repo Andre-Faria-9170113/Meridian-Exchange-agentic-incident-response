@@ -81,7 +81,8 @@ async def verify(gateway: Gateway, action_tick: int) -> tuple[bool, list[str]]:
 
 async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", model: Any = None,
               resume: bool = False, role: str | None = None, pause_after: str | None = None,
-              memory_path: Path | None = None) -> dict:
+              memory_path: Path | None = None, observe=None) -> dict:
+    """`observe(tools)` lets the evaluator see the simulator and tool trace; it does not change behaviour."""
     state = Checkpoint(directory)
     if resume:
         state.load()
@@ -111,6 +112,8 @@ async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", 
     identity = identity_for(role or state.data.get("role") or sim.scenario.actor.get("role", "first-line"))
     state.set(role=identity["role"])
     tools = MeridianTools(sim, actor=identity["name"])
+    if observe:
+        observe(tools)
     deps = IncidentDeps(tools, MemoryStore(state.data["memory_path"]), identity)
     # Fixtures intentionally start with a clean memory DB in the evaluation runner.
     deps.memory.seed(sim.scenario.memory_seed)
