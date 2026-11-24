@@ -1,190 +1,251 @@
-"""End-to-end starter: observe -> delegate -> authorize -> act -> verify."""
+"""End to end: brief -> specialists -> decision -> authorize -> act -> verify -> record.
+
+The model never holds a mutation tool. After the coordinator decides, code checks authority,
+re-reads fresh evidence, asks for approval, acts once with an idempotency key, confirms the
+effect with the executor, and verifies recovery against the runbook criterion. The incident
+ticket is updated (or created) by code, idempotently, with the outcome.
+
+Progress is checkpointed (checkpoint.json) and the simulated systems persist separately
+(world.pkl), so a paused run can be resumed in another process.
+"""
+from __future__ import annotations
+
 import hashlib
-import json
-from dataclasses import asdict
+import shutil
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
+
+from pydantic import ValidationError
+from pydantic_ai.exceptions import AgentRunError
 
 from meridian.agent_runtime import IncidentDeps, identity_for
 from meridian.memory import MemoryStore
-from meridian.simulator import Simulator
-from meridian.tools import MeridianTools
+from meridian.scenarios import load_scenario
 
 from . import __version__
-from .agents import fixture_plan, llm_plan
-from .contracts import Metrics, Plan, Report
+from .agents import Crew, LLMSpecialists, Orchestrator, Pipeline, SpecialistFailure
+from .contracts import Plan, Report
 from .gateway import Gateway, ToolFailure, redact, require
+from .guards import evidence_refusal, verify
 from .memory import recall, remember
-from .policy import refusal
+from .policy import PolicyRefusal, approval_refusal, approver_role, authority_refusal
+from .rules import RuleSpecialists
 from .state import Checkpoint
+from .world import create_world, load_world
+
+PAUSE_POINTS = ("plan", "action")
 
 
-async def metrics(gateway: Gateway, component: str) -> Metrics:
-    return Metrics.model_validate(require(await gateway.call("read_metrics", component=component,
-                                                              window_ticks=5, per_instance=True)))
+@dataclass
+class Outcome:
+    status: str
+    summary: str
+    actions: list[str] = field(default_factory=list)
+    evidence: list[str] = field(default_factory=list)
+    refusals: list[str] = field(default_factory=list)
 
 
-async def collect(gateway: Gateway, deps: IncidentDeps) -> dict:
-    gateway_metrics = await metrics(gateway, "order-gateway")
-    database_metrics = await metrics(gateway, "reference-db")
-    links = [require(await gateway.call("check_link", source="order-gateway", target=target))
-             for target in ("reference-db", "matching-engine")]
-    tickets = require(await gateway.call("search_issues", server="tickets", text="order acknowledgements", max_results=5))
-    if not isinstance(tickets.get("issues"), list):
-        raise ToolFailure("Invalid MCP search_issues output")
-    for issue in tickets["issues"]:
-        if not isinstance(issue, dict) or not isinstance(issue.get("key"), str):
-            raise ToolFailure("Invalid MCP issue summary")
-    return {"brief": deps.sim.incident_brief(), "gateway_metrics": gateway_metrics.model_dump(),
-        "database_metrics": database_metrics.model_dump(), "links": links, "tickets": tickets,
-        "alerts": require(await gateway.call("list_alerts", server="monitoring", device="order-gateway", size=10)),
-        "logs": require(await gateway.call("read_logs", component="order-gateway", level="ERROR", limit=10)),
-        "changes": require(await gateway.call("recent_changes", limit=5)),
-        "runbook": require(await gateway.call("read_runbook", name="order-gateway-latency")),
-        "memory_hints": recall(deps)}
+class Paused(Exception):
+    def __init__(self, phase: str):
+        super().__init__(phase)
+        self.phase = phase
 
 
-async def evidence_refusal(gateway: Gateway, plan: Plan) -> str | None:
-    proposal = plan.finding.proposal
-    if not plan.review.safe_to_attempt:
-        return "Safety specialist did not endorse the proposal"
-    if proposal.action != "restart_instance":
-        return "Starter action evidence guard supports instance restarts only; implement rollback evidence before enabling it"
-    latest = (await metrics(gateway, "order-gateway")).readings[-1]
-    instance = latest.instances.get(proposal.target)
-    if not instance or instance.get("memory_pct", 0) <= 90:
-        return "Fresh metrics do not justify restarting this gateway instance"
-    for target in ("reference-db", "matching-engine"):
-        link = require(await gateway.call("check_link", source="order-gateway", target=target))
-        if link.get("state") != "up":
-            return "Dependency link is not healthy; investigate it before any restart"
-    db = (await metrics(gateway, "reference-db")).readings[-1]
-    if db.latency_ms >= 20 or db.error_rate >= 0.01:
-        return "Database dependency is not healthy"
-    return None
+def coordinator_for(crew: Crew, mode: str, coordination: str, model: Any):
+    if mode == "fixture":
+        return Pipeline(crew, RuleSpecialists(crew.gateway, crew.deps, crew.brief))
+    specialists = LLMSpecialists(crew, model)
+    return Orchestrator(crew, specialists, model) if coordination == "orchestrator" else Pipeline(crew, specialists)
 
 
-async def verify(gateway: Gateway, action_tick: int) -> tuple[bool, list[str]]:
-    refs = []
-    for _ in range(10):
-        observation = await metrics(gateway, "order-gateway")
-        refs.append(observation.source_ref)
-        recent = observation.readings[-3:]
-        if (len(recent) == 3 and recent[0].tick > action_tick
-                and len({row.tick for row in recent}) == 3
-                and all(right.tick == left.tick + 1 for left, right in zip(recent, recent[1:]))
-                and all(row.latency_ms < 20 and row.error_rate < 0.01 for row in recent)):
-            return True, refs
-    return False, refs
+async def act(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, plan: Plan, pause_after: str | None) -> Outcome:
+    """Authorize, act once, confirm the effect, verify recovery. Refusals end the attempt with zero effects."""
+    finding, proposal = plan.finding, plan.finding.proposal
+    denied = authority_refusal(deps, proposal)
+    if denied:
+        raise PolicyRefusal(denied)
+    key = f"{state.data['run_id']}:{proposal.action}:{proposal.target}"
+    known = require(await gateway.call("action_status", idempotency_key=key))
+    if known.get("status") != "completed":
+        denied = await evidence_refusal(gateway, deps, finding)
+        if denied:
+            raise PolicyRefusal(denied)
+        approval = require(await gateway.call("request_approval", action=proposal.action, target=proposal.target,
+                                              reason=f"{proposal.reason} ({finding.cause})"[:300],
+                                              approver_role=approver_role(deps, proposal)))
+        state.set(approval=approval)
+        denied = approval_refusal(deps, proposal, approval["approval_ref"])
+        if denied:
+            raise PolicyRefusal(denied)
+        state.set(intent={"key": key, "action": proposal.action, "target": proposal.target, "approval_ref": approval["approval_ref"]})
+        argument = "instance_id" if proposal.action == "restart_instance" else "change_id"
+        await gateway.call(proposal.action, **{argument: proposal.target}, idempotency_key=key,
+                           confirmation_ref=approval["approval_ref"])  # the response may be lost: ask the executor below
+        known = require(await gateway.call("action_status", idempotency_key=key))
+    if known.get("status") != "completed":
+        raise ToolFailure(f"Executor outcome for {key} is {known.get('status')}; stopping without repeating the action")
+    state.set(phase="acted", action=known)
+    if pause_after == "action":
+        raise Paused("acted")
+    return await check_recovery(gateway, deps, plan, known)
+
+
+async def check_recovery(gateway: Gateway, deps: IncidentDeps, plan: Plan, known: dict) -> Outcome:
+    action = f"{known['action']} {known['target']} ({known['action_id']}, approval {known.get('confirmation_ref')})"
+    recovered, refs, detail = await verify(gateway, deps, plan.finding.component, known["tick"])
+    if recovered:
+        return Outcome("recovered", f"Recovery verified: {detail}.", [action], refs)
+    return Outcome("not_recovered", f"The action completed but recovery was not verified: {detail}.", [action], refs)
+
+
+async def update_tickets(gateway: Gateway, state: Checkpoint, plan: Plan, report: Report) -> list[str]:
+    """Record the outcome on the incident ticket, or open one. Idempotent across resumes (marker in the text)."""
+    notes, correlation = [], plan.correlation
+    marker = f"[{state.data['run_id'][:8]}]"
+    text = (f"{marker} Agent update for {report.incident_id}: status {report.status}. Cause: {report.root_cause} "
+            f"Actions: {', '.join(report.actions_taken) or 'none'}. {report.summary}")[:1500]
+    key = correlation.incident_ticket
+    if key is None:
+        found = await gateway.call("tickets.search_issues", text=marker.strip("[]"), max_results=5)
+        existing = [issue["key"] for issue in found.get("issues", []) if issue.get("project") == "MRX"]
+        if existing:
+            key = existing[0]
+        else:
+            created = await gateway.call("tickets.create_issue", project="MRX", issue_type="Incident",
+                                         summary=f"{report.incident_id}: {state.data['brief']['summary']}"[:80],
+                                         description=text, component=correlation.component, priority="High")
+            if created.get("error"):
+                return [f"Could not open an incident ticket: {created['error']}"]
+            key = created["key"]
+    else:
+        issue = await gateway.call("tickets.get_issue", key=key)
+        if not any(marker in comment.get("body", "") for comment in issue.get("comments", [])):
+            commented = await gateway.call("tickets.add_comment", key=key, body=text)
+            if commented.get("error"):
+                notes.append(f"Could not comment on {key}: {commented.get('message') or commented['error']}")
+    issue = await gateway.call("tickets.get_issue", key=key)
+    linked = {link.get("key") for link in issue.get("links", [])}
+    for related in correlation.related:
+        if related not in linked:
+            result = await gateway.call("tickets.link_issues", key=key, other_key=related, link_type="relates to")
+            if result.get("error"):
+                notes.append(f"Could not link {related} to {key}: {result.get('message') or result['error']}")
+    state.set(incident_ticket=key)
+    return notes
 
 
 async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", model: Any = None,
-              resume: bool = False, role: str | None = None, pause_after: str | None = None,
-              memory_path: Path | None = None, observe=None) -> dict:
-    """`observe(tools)` lets the evaluator see the simulator and tool trace; it does not change behaviour."""
+              coordination: str = "orchestrator", resume: bool = False, role: str | None = None,
+              pause_after: str | None = None, memory_path: Path | None = None,
+              observe: Callable[[Any], None] | None = None) -> dict:
+    """Run (or resume) one incident. `observe(tools)` lets the evaluator see the simulated systems."""
     state = Checkpoint(directory)
+    world_path = directory / "world.pkl"
     if resume:
         state.load()
         if state.data["version"] != __version__:
-            raise ValueError("Resume with the version that created this checkpoint")
-        scenario = directory / "scenario.yaml"
-        if hashlib.sha256(scenario.read_bytes()).hexdigest() != state.data["scenario_sha256"]:
-            raise ValueError("Pinned scenario changed; resume refused")
-        mode = state.data["mode"]
+            raise ValueError("Resume with the code version that created this checkpoint")
+        pinned = directory / "scenario.yaml"
+        if hashlib.sha256(pinned.read_bytes()).hexdigest() != state.data["scenario_sha256"]:
+            raise ValueError("The pinned scenario changed; resume refused")
         if state.data["phase"] == "done":
             return state.data["report"]
+        mode, coordination = state.data["mode"], state.data["coordination"]
     else:
         if state.path.exists():
-            raise ValueError("Run directory already exists; use --resume or a new --run-dir")
+            raise ValueError("Run directory already used; resume it or choose a new --run-dir")
         if scenario is None:
             raise ValueError("A scenario is required")
-        raw = scenario.read_bytes()
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / "scenario.yaml").write_bytes(raw)
-        scenario = directory / "scenario.yaml"
-        state.set(version=__version__, run_id=uuid4().hex, phase="investigate", mode=mode,
+        shutil.copyfile(scenario, directory / "scenario.yaml")
+        state.set(version=__version__, run_id=uuid4().hex, phase="start", mode=mode,
+                  coordination=coordination if mode == "llm" else "pipeline (deterministic rules)",
                   model=str(model) if mode == "llm" else "none (deterministic fixture)",
-                  scenario_sha256=hashlib.sha256(raw).hexdigest(), events=[],
-                  memory_path=str((memory_path or directory.parent / "memory.db").resolve()))
+                  scenario_sha256=hashlib.sha256((directory / "scenario.yaml").read_bytes()).hexdigest(),
+                  memory_path=str((memory_path or directory.parent / "memory.db").resolve()), events=[])
 
-    sim = Simulator(scenario)
-    identity = identity_for(role or state.data.get("role") or sim.scenario.actor.get("role", "first-line"))
+    identity = identity_for(role or state.data.get("role")
+                            or load_scenario(directory / "scenario.yaml").actor.get("role", "first-line"))
+    tools = load_world(world_path, identity["name"]) if resume else create_world(directory / "scenario.yaml", world_path, identity["name"])
     state.set(role=identity["role"])
-    tools = MeridianTools(sim, actor=identity["name"])
     if observe:
         observe(tools)
     deps = IncidentDeps(tools, MemoryStore(state.data["memory_path"]), identity)
-    # Fixtures intentionally start with a clean memory DB in the evaluation runner.
-    deps.memory.seed(sim.scenario.memory_seed)
-    report = None
+    deps.memory.seed(tools.sim.scenario.memory_seed)
+    if "brief" not in state.data:
+        state.set(brief=redact(tools.sim.incident_brief()))
+    brief = state.data["brief"]
+
+    outcome, plan, crew = None, None, None
     try:
-        async with Gateway(tools, state) as gateway:
-            if resume:
-                # Replay records original actors; subsequent authorization uses current identity.
-                await gateway.replay()
-            if state.data["phase"] == "investigate":
-                context = await collect(gateway, deps)
-                state.set(context=context)
-                audit: dict = {}
-                try:
-                    plan = fixture_plan(context) if mode == "fixture" else await llm_plan(context, model, audit)
-                finally:
-                    state.set(**audit)
-                state.set(plan=plan.model_dump(), phase="planned")
-                if pause_after == "plan":
-                    return {"status": "paused", "phase": "planned", "run_dir": str(directory)}
-            plan = Plan.model_validate(state.data["plan"])
-            proposal = plan.finding.proposal
-            evidence = list(plan.finding.evidence) + list(plan.review.evidence)
-            actions: list[str] = []
-            status, summary = "not_recovered", "No supported mitigation proposed; escalate for further investigation"
-            if proposal.action != "none":
-                denied = refusal(deps, proposal, require_approval=False)
-                if denied:
-                    raise PermissionError(denied)
-                key = f"{state.data['run_id']}:{proposal.action}:{proposal.target}"
-                known = require(await gateway.call("action_status", idempotency_key=key))
-                if known.get("status") != "completed":
-                    denied = await evidence_refusal(gateway, plan)
-                    if denied:
-                        raise PermissionError(denied)
-                    approval = require(await gateway.call("request_approval", action=proposal.action,
-                        target=proposal.target, reason=proposal.reason, approver_role="on-call"))
-                    denied = refusal(deps, proposal, approval.get("approval_ref"))
-                    if denied:
-                        raise PermissionError(denied)
-                    args = {"instance_id" if proposal.action == "restart_instance" else "change_id": proposal.target,
-                            "idempotency_key": key, "confirmation_ref": approval["approval_ref"]}
-                    await gateway.call(proposal.action, **args)
-                    known = require(await gateway.call("action_status", idempotency_key=key))
+        async with Gateway(tools, state, {"memory.recall": lambda subject: recall(deps, subject)}) as gateway:
+            state.set(catalog=gateway.catalog)
+            crew = Crew(gateway, deps, brief)
+            coordinator = coordinator_for(crew, mode, coordination, model)
+            try:
+                if state.data["phase"] == "start":
+                    plan = await coordinator.plan()
+                    state.set(plan=plan.model_dump(), phase="planned")
+                    if pause_after == "plan":
+                        raise Paused("planned")
+                plan = Plan.model_validate(state.data["plan"])
+                if state.data["phase"] == "acted":
+                    outcome = await check_recovery(gateway, deps, plan, state.data["action"])
+                elif plan.decision.decision == "act":
+                    outcome = await act(gateway, deps, state, plan, pause_after)
+                elif plan.decision.decision == "no_action_needed":
+                    healthy, refs, detail = await verify(gateway, deps, plan.finding.component, None)
+                    outcome = (Outcome("resolved", f"No action needed: {detail}.", [], refs) if healthy else
+                               Outcome("escalated", f"The investigator found no fault, but {detail}; escalate to on-call.", [], refs))
                 else:
-                    denied = refusal(deps, proposal, known.get("confirmation_ref"))
-                    if denied:
-                        raise PermissionError(denied)
-                if known.get("status") != "completed":
-                    raise ToolFailure("Executor outcome remains unknown; stop without repeating the action")
-                state.set(phase="acted", action=known)
-                if pause_after == "action":
-                    return {"status": "paused", "phase": "acted", "run_dir": str(directory)}
-                actions.append(f"{proposal.action} {proposal.target} ({known['action_id']})")
-                healthy, refs = await verify(gateway, known["tick"])
-                evidence += refs
-                status = "recovered" if healthy else "not_recovered"
-                summary = ("Recovery verified against the gateway runbook. Restart mitigates pressure; the memory leak remains."
-                           if healthy else "Action completed but recovery was not verified within the observation budget")
-            report = Report(incident_id=sim.scenario.incident["id"], status=status,
-                root_cause=plan.finding.cause, evidence=sorted(set(evidence)), actions_taken=actions, summary=summary)
-    except Exception as error:
-        # Keep trace/checkpoint even after model, tool, contract or policy failures.
-        report = Report(incident_id=sim.scenario.incident["id"],
-            status="refused" if isinstance(error, PermissionError) else "insufficient_information",
-            root_cause=state.data.get("plan", {}).get("finding", {}).get("cause", "Undetermined"),
-            evidence=[], actions_taken=[f"{r.action} {r.target}" for r in sim.executor.effects()],
-            summary=f"{type(error).__name__}: {error}")
-    remember(deps, report, state.data["run_id"])
-    state.set(phase="done", report=report.model_dump(),
-              trace=redact([asdict(call) for call in tools.trace]),
-              actions=[record.public() for record in sim.executor.audit], approvals=sim.approvals)
+                    outcome = Outcome("escalated", f"Escalated to on-call: {plan.decision.rationale}")
+            except PolicyRefusal as refusal:
+                outcome = Outcome("refused", f"Refused before any effect: {refusal}", refusals=[str(refusal)])
+            except (ToolFailure, ValidationError, AgentRunError, SpecialistFailure) as error:
+                outcome = Outcome("insufficient_information", f"Stopped in a controlled way: {type(error).__name__}: {error}")
+            report = build_report(brief, plan, outcome, crew)
+            if plan is not None:
+                notes = await update_tickets(gateway, state, plan, report)
+                report = report.model_copy(update={"refusals": report.refusals + notes,
+                                                   "incident_ticket": state.data.get("incident_ticket")})
+    except Paused as pause:
+        record_usage(state, crew)
+        state.set(phase=pause.phase)
+        return {"status": "paused", "phase": pause.phase, "run_dir": str(directory)}
+    if outcome.status == "recovered" and plan is not None:
+        remember(deps, incident_id=brief["incident_id"], component=plan.finding.component, cause_kind=plan.finding.cause_kind,
+                 action=state.data["action"], verification=outcome.evidence[-1], run_id=state.data["run_id"])
+    record_usage(state, crew)
+    state.set(phase="done", report=report.model_dump(), trace=redact([asdict(call) for call in tools.trace]),
+              actions=[record.public() for record in tools.sim.executor.audit], approvals=tools.sim.approvals)
     (directory / "report.json").write_text(report.model_dump_json(indent=2), encoding="utf-8")
     return report.model_dump()
+
+
+def build_report(brief: dict, plan: Plan | None, outcome: Outcome, crew: Crew | None) -> Report:
+    finding = plan.finding if plan else None
+    evidence = list(finding.evidence) if finding else []
+    if plan and plan.review:
+        evidence += plan.review.evidence
+    root_cause = finding.cause if finding else "Undetermined"
+    if finding and finding.change_id and finding.change_id not in root_cause:
+        root_cause += f" (change {finding.change_id})"
+    summary = outcome.summary
+    if crew and crew.failures:
+        summary += " Specialist failures: " + "; ".join(crew.failures)
+    return Report(incident_id=brief["incident_id"], status=outcome.status, root_cause=root_cause,
+                  incident_ticket=plan.correlation.incident_ticket if plan else None,
+                  related_tickets=plan.correlation.related if plan else [],
+                  evidence=sorted(set(evidence + outcome.evidence)), actions_taken=outcome.actions,
+                  refusals=outcome.refusals, summary=summary)
+
+
+def record_usage(state: Checkpoint, crew: Crew | None) -> None:
+    if crew is None:
+        return
+    usage = crew.usage
+    state.set(usage={"requests": usage.requests, "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
+                     "tool_calls": usage.tool_calls},
+              model_messages=crew.messages, specialist_failures=crew.failures)

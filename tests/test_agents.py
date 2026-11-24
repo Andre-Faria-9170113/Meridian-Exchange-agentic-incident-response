@@ -1,63 +1,118 @@
-"""Exercise the three-agent wiring using a scripted local model."""
+"""The LLM team's wiring and validation, with a scripted local model (no API key, no network).
+
+The script plays each agent: it calls real tools through the gateway and answers from what they return.
+This tests delegation, contracts and the code checks around the agents, not model quality.
+"""
 import asyncio
 import json
 from pathlib import Path
 
-from pydantic import BaseModel
-from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart, UserPromptPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import FunctionModel
 
-from incident_response.agents import fixture_plan
 from incident_response.workflow import run
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-async def scripted_model(messages, info):
-    returns = {part.tool_name: part.content for message in messages for part in message.parts
-               if isinstance(part, ToolReturnPart)}
-    if info.function_tools:
-        for tool in ["ask_investigator", "ask_safety_reviewer"]:
-            if tool not in returns:
-                return ModelResponse(parts=[ToolCallPart(tool, {})])
-        def as_data(value):
-            if isinstance(value, BaseModel):
-                return value.model_dump()
-            return json.loads(value) if isinstance(value, str) else value
-        output = {"finding": as_data(returns["ask_investigator"]),
-                  "review": as_data(returns["ask_safety_reviewer"])}
-    else:
-        prompt = next(part.content for message in messages for part in message.parts if isinstance(part, UserPromptPart))
-        payload = json.loads(prompt)
-        if "finding" in payload:
-            output = fixture_plan(payload["evidence"]).review.model_dump()
-        else:
-            output = fixture_plan(payload).finding.model_dump()
-    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, output)])
+def returns(messages):
+    return [(part.tool_name, part.content) for message in messages if isinstance(message, ModelRequest)
+            for part in message.parts if isinstance(part, ToolReturnPart)]
 
 
-def test_orchestrator_delegates_to_both_specialists(tmp_path):
-    async def bounded_run():
-        return await asyncio.wait_for(run(ROOT / "cases/s03-alert-and-ticket.yaml", tmp_path / "run",
-                                          mode="llm", model=FunctionModel(scripted_model)), timeout=15)
-    report = asyncio.run(bounded_run())
-    assert report["status"] == "recovered", report
+def retried(messages):
+    return any(isinstance(part, RetryPromptPart) for message in messages if isinstance(message, ModelRequest) for part in message.parts)
+
+
+def call(name, args):
+    return ModelResponse(parts=[ToolCallPart(name, args)])
+
+
+def answer(info, data):
+    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, data)])
+
+
+class Script:
+    def __init__(self, fake_ref_once=False, reviewer_fails=False, act_without_review=False):
+        self.fake_ref_once, self.reviewer_fails, self.act_without_review = fake_ref_once, reviewer_fails, act_without_review
+
+    async def __call__(self, messages, info):
+        instructions, done = info.instructions or "", returns(messages)
+        refs = [content["ref"] for _, content in done if isinstance(content, dict) and "ref" in content]
+        if "You are the triage specialist" in instructions:
+            if not done:
+                return call("monitoring_list_alerts", {"device": "order-gateway", "size": 20})
+            if len(done) == 1:
+                return call("tickets_search_issues", {"max_results": 10})
+            issues = done[1][1]["issues"]
+            incident = next(i["key"] for i in issues if i["project"] == "MRX" and i.get("component") == "order-gateway")
+            related = [i["key"] for i in issues if i["key"] != incident and "acknowledg" in i["summary"].lower()]
+            return answer(info, {"component": "order-gateway", "incident_ticket": incident, "related": related,
+                                 "unrelated": [i["key"] for i in issues if i["key"] not in related + [incident]],
+                                 "reasoning": "Same component and symptom", "evidence": refs})
+        if "You are the investigator" in instructions:
+            if not done:
+                return call("read_metrics", {"component": "order-gateway", "per_instance": True})
+            latest = done[0][1]["readings"][-1]["instances"]
+            hot = next(name for name, values in latest.items() if values["memory_pct"] > 90)
+            evidence = ["T99"] if self.fake_ref_once and not retried(messages) else refs
+            return answer(info, {"component": "order-gateway", "cause_kind": "instance_memory", "cause": f"{hot} memory high",
+                                 "evidence": evidence, "proposal": {"action": "restart_instance", "target": hot, "reason": "runbook"}})
+        if "You are the dependency and safety reviewer" in instructions:
+            if self.reviewer_fails:
+                raise RuntimeError("reviewer model unavailable")
+            if not done:
+                return call("check_link", {"source": "order-gateway", "target": "reference-db"})
+            return answer(info, {"safe_to_attempt": True, "constraints": ["one instance"], "evidence": refs})
+        asked = [name for name, _ in done]
+        if "ask_triage" not in asked:
+            return call("ask_triage", {"question": "Which component and tickets?"})
+        if "ask_investigator" not in asked:
+            return call("ask_investigator", {"question": "Cause and proposal?"})
+        if self.act_without_review and not retried(messages):
+            return answer(info, {"decision": "act", "rationale": "skipping review"})
+        if "ask_reviewer" not in asked:
+            return call("ask_reviewer", {"question": "Is this safe?"})
+        review = dict(done)["ask_reviewer"]
+        decision = "escalate" if "error" in review else "act"
+        return answer(info, {"decision": decision, "rationale": "Based on the specialists"})
+
+
+def execute(tmp_path, script, case="s03-alert-and-ticket", **kwargs):
+    async def bounded():
+        return await asyncio.wait_for(run(ROOT / "cases" / f"{case}.yaml", tmp_path / "run", mode="llm",
+                                          model=FunctionModel(script), memory_path=tmp_path / "memory.db", **kwargs), 30)
+    report = asyncio.run(bounded())
     state = json.loads((tmp_path / "run/checkpoint.json").read_text())
-    assert set(state["model_messages"]) == {"investigator", "reviewer", "orchestrator"}
-    assert state["usage"]["requests"] == 5
+    return report, state, [a for a in state["actions"] if a["outcome"] == "completed"]
 
 
-def test_failure_between_specialists_stops_before_action(tmp_path):
-    async def reviewer_unavailable(messages, info):
-        if "You are the dependency and safety specialist" in (info.instructions or ""):
-            raise RuntimeError("Safety specialist unavailable")
-        return await scripted_model(messages, info)
+def test_orchestrator_delegates_and_code_executes(tmp_path):
+    report, state, effects = execute(tmp_path, Script())
+    assert report["status"] == "recovered" and report["incident_ticket"] == "MRX-2210"
+    assert set(state["model_messages"]) == {"triage", "investigator", "reviewer", "orchestrator"}
+    assert {e["caller"] for e in state["events"]} >= {"triage", "investigator", "reviewer", "harness"}
+    assert state["usage"]["requests"] > 0 and len(effects) == 1
 
-    async def bounded_run():
-        return await asyncio.wait_for(run(ROOT / "cases/s03-alert-and-ticket.yaml", tmp_path / "run",
-            mode="llm", model=FunctionModel(reviewer_unavailable)), timeout=15)
-    report = asyncio.run(bounded_run())
-    assert report["status"] == "insufficient_information"
-    state = json.loads((tmp_path / "run/checkpoint.json").read_text())
-    assert state["actions"] == []
-    assert "investigator" in state["model_messages"]
+
+def test_invented_evidence_is_rejected_then_corrected(tmp_path):
+    report, state, _ = execute(tmp_path, Script(fake_ref_once=True))
+    assert report["status"] == "recovered"
+    assert "Unknown evidence refs" in json.dumps(state["model_messages"]["investigator"])
+
+
+def test_failure_between_specialists_is_detected_and_nothing_happens(tmp_path):
+    report, state, effects = execute(tmp_path, Script(reviewer_fails=True))
+    assert report["status"] == "escalated" and effects == []
+    assert state["specialist_failures"] and "reviewer" in state["specialist_failures"][0]
+
+
+def test_orchestrator_cannot_act_without_a_review(tmp_path):
+    report, state, effects = execute(tmp_path, Script(act_without_review=True))
+    assert "act needs the reviewer" in json.dumps(state["model_messages"]["orchestrator"])
+    assert report["status"] == "recovered" and len(effects) == 1
+
+
+def test_pipeline_with_llm_specialists(tmp_path):
+    report, state, effects = execute(tmp_path, Script(), coordination="pipeline")
+    assert report["status"] == "recovered" and "orchestrator" not in state["model_messages"]

@@ -1,9 +1,38 @@
 {
-  "tickets": {
-    "search_issues": "71cf8a15117b",
-    "get_issue": "4717cdb1bddc"
-  },
   "monitoring": {
-    "list_alerts": "51e212008981"
+    "version": "2.9.4",
+    "publisher": "observability-team",
+    "tools": {
+      "list_alerts": {
+        "description_sha256": "51e212008981",
+        "schema_sha256": "d7716e1e5c20"
+      }
+    }
+  },
+  "tickets": {
+    "version": "2.7.1",
+    "publisher": "it-service-management",
+    "tools": {
+      "add_comment": {
+        "description_sha256": "ecd95e6ffb50",
+        "schema_sha256": "f91ebe952f1e"
+      },
+      "create_issue": {
+        "description_sha256": "5584e0afa1db",
+        "schema_sha256": "5abb81f0fbe3"
+      },
+      "get_issue": {
+        "description_sha256": "4717cdb1bddc",
+        "schema_sha256": "96ebdd37246d"
+      },
+      "link_issues": {
+        "description_sha256": "a310b15f0513",
+        "schema_sha256": "6c4a89004c70"
+      },
+      "search_issues": {
+        "description_sha256": "71cf8a15117b",
+        "schema_sha256": "c46c9e3766f6"
+      }
+    }
   }
 }

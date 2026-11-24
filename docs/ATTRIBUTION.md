@@ -1,18 +1,19 @@
 # Source attribution and provenance
 
-This folder was assembled from the user's local Generative AI course workspace on 15 November 2026.
+The course material is by **Luís Noronha** (*Agentic AI: Da Arquitetura à Implementação*). Reusing the course simulator,
+cases and patterns is expected by the project brief. This file separates that material from the project's own work.
+It does not assign a new license to the course material.
 
-| Material | Original location in the course workspace | Treatment |
+| Material | Origin | Treatment |
 |---|---|---|
-| Meridian simulator, tools, memory, security facts, MCP servers, data and tests | `meridian/` | Copied as supplied; excludes Python bytecode/cache files |
-| Four scenario files | Sessions 1, 2 and 3 under `sessions/course-02-agentic-ai/*/cases/` | Copied unchanged |
-| Four public expectation files | Corresponding session `checks/` folders | Copied unchanged; not supplied to model context |
-| MCP description hashes | Session 3 `starter/catalog.lock.json` | Only the starter's selected read tools retained |
-| Agent/harness patterns | Sessions 1–7, especially tools/context, MCP, memory, security and multi-agent exercises | Adapted into new project-owned modules |
-| Requirements interpretation | Root `Projeto Agentic AI.pdf`, pages 2–10 | Paraphrased in `docs/PROJECT_BRIEF.md`; PDF not duplicated here |
-| Student-facing boilerplate and documentation | `incident_response/`, `scripts/`, `tests/`, `docs/`, project configuration | Generated with Codex assistance for this starter |
-| Additional synthetic cases | `cases/approval-denied.yaml`, `cases/injected-log.yaml` | Derived from the supplied multi-source incident |
+| `meridian/` (simulator, tools, memory store, security facts, MCP servers, data, runbooks, evaluator) | Course repository, `meridian/` | Copied unchanged (Python caches excluded) |
+| `cases/s0*.yaml`, `checks/s0*.yaml` (20 cases and their checks) | Course sessions 1–4, `sessions/course-02-agentic-ai/*/cases` and `*/checks` | Copied unchanged |
+| MCP description hashes in `incident_response/catalog.lock.json` | Session 3 reviewed catalog (`03-mcp-integration/starter/catalog.lock.json`) | Same description hashes for the selected tools. Schema hashes were added with `scripts/review_catalog.py` |
+| Correlation vocabulary in `incident_response/rules.py` | Session 3 solution (`03-mcp-integration/starter/incident_server.py`) | Adapted |
+| Agent, harness, orchestration and resume patterns | Sessions 1–9 exercises and published solutions | Adapted into project modules |
+| `cases/approval-denied.yaml`, `cases/injected-log.yaml` and their checks | Derived from the course's `s03-alert-and-ticket` case | Project cases |
+| Initial boilerplate (`v0-starter`) | Generated with OpenAI Codex, 15 November 2026 | Kept as the baseline tag |
+| Evaluator, agent layer from `baseline`/`milestone-1` on, tests, README | Written with Claude Code (Claude Opus 5.5), 24 November 2026, at the student's direction | Project code |
 
-The course brief identifies the trainer as **Luís Noronha**. Retain this source attribution and existing notices in the public project repository. This starter does not assign a new license to the copied course material.
-
-The starter intentionally does not copy the course `.env`, `.git`, virtual environment, local databases, unrelated courses or private solution directories.
+The project does not include the course's `.env`, `.git` history, virtual environment, local databases, private
+solutions or other courses.

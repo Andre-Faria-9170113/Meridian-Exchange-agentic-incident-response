@@ -1,34 +1,69 @@
-"""Small, reviewed MCP surface plus journaled native simulator tools."""
+"""The single path from agents and harness to the systems: an MCP and tool gateway.
+
+Every call, by a specialist or by harness code, goes through `Gateway.call`, which:
+
+- checks the caller may use that tool (least privilege per specialist; mutations are harness-only);
+- for MCP tools, allows only reviewed servers and tools whose description and input schema
+  match the reviewed lock (catalog.lock.json); unreviewed servers are never connected;
+- clamps list sizes so one result cannot flood the model context;
+- journals the call in the checkpoint before running it (write-ahead) and its result after;
+- retries once when a tool says the failure is retryable;
+- blocks a tool for the rest of the run after an `insufficient_scope` refusal;
+- masks personal data in results before any model or file sees them;
+- gives each result a reference (T01, T02, ...) that specialists must cite as evidence.
+"""
+from __future__ import annotations
+
 import hashlib
 import json
 import re
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 
 from meridian.mcp_servers import build_servers
 from meridian.tools import MeridianTools
 
 from .state import Checkpoint
 
-CATALOG = Path(__file__).with_name("catalog.lock.json")
-MCP_ALLOW = {"tickets": {"search_issues", "get_issue"},
-             "monitoring": {"list_alerts"}}
-NATIVE_ALLOW = {"read_metrics", "read_logs", "check_link", "recent_changes",
-                "list_runbooks", "read_runbook", "exchange_status",
-                "request_approval", "restart_instance", "rollback_change", "action_status"}
+LOCK = Path(__file__).with_name("catalog.lock.json")
+
+READS = {"read_metrics", "read_logs", "check_link", "recent_changes", "list_runbooks", "read_runbook", "exchange_status"}
+MUTATIONS = {"request_approval", "restart_instance", "rollback_change"}
+HARNESS_MCP = {"tickets.add_comment", "tickets.link_issues", "tickets.create_issue"}
+
+# Least privilege: what each caller may use. Specialists only read; only harness code changes anything.
+CALLER_TOOLS: dict[str, set[str]] = {
+    "triage": {"monitoring.list_alerts", "tickets.search_issues", "tickets.get_issue"},
+    "investigator": {"read_metrics", "read_logs", "recent_changes", "list_runbooks", "read_runbook", "memory.recall"},
+    "reviewer": {"read_metrics", "check_link", "recent_changes", "exchange_status", "read_runbook"},
+    "harness": READS | MUTATIONS | {"action_status", "monitoring.list_alerts", "tickets.search_issues",
+                                    "tickets.get_issue"} | HARNESS_MCP,
+}
+# Context limits: the most items one call may return.
+CLAMPS = {"read_metrics": ("window_ticks", 10), "read_logs": ("limit", 30), "recent_changes": ("limit", 10),
+          "monitoring.list_alerts": ("size", 20), "tickets.search_issues": ("max_results", 10)}
+
+PERSONAL_DATA = [
+    (re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"), "[email]"),
+    (re.compile(r"\bACC-\d{6}\b"), "[account]"),
+    (re.compile(r"\+\d{1,3}(?: ?\d{2,4}){2,4}\b"), "[phone]"),
+]
 
 
 class ToolFailure(RuntimeError):
-    pass
+    """A tool needed by harness code failed: the run stops in a controlled way."""
 
 
 def redact(value: Any) -> Any:
-    """Illustrative email masking; extend for account IDs, phones and your data."""
+    """Mask personal data (session 5 patterns) while keeping technical evidence intact."""
     if isinstance(value, str):
-        return re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[EMAIL]", value)
+        for pattern, label in PERSONAL_DATA:
+            value = pattern.sub(label, value)
+        return value
     if isinstance(value, dict):
         return {key: redact(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -36,85 +71,115 @@ def redact(value: Any) -> Any:
     return value
 
 
-class Gateway:
-    def __init__(self, tools: MeridianTools, checkpoint: Checkpoint):
-        self.tools, self.checkpoint = tools, checkpoint
-        self.clients: dict[str, Client] = {}
-        self.blocked: set[tuple[str, str]] = set()
-        self.approved: set[tuple[str, str]] = set()
-        self.stack = AsyncExitStack()
+def tool_hashes(description: str | None, schema: dict[str, Any] | None) -> dict[str, str]:
+    return {"description_sha256": hashlib.sha256((description or "").encode()).hexdigest()[:12],
+            "schema_sha256": hashlib.sha256(json.dumps(schema or {}, sort_keys=True).encode()).hexdigest()[:12]}
 
-    async def __aenter__(self):
-        lock = json.loads(CATALOG.read_text(encoding="utf-8"))
+
+class Gateway:
+    def __init__(self, tools: MeridianTools, checkpoint: Checkpoint, local_tools: dict[str, Callable[..., dict]] | None = None):
+        self.tools, self.checkpoint = tools, checkpoint
+        self.local_tools = local_tools or {}
+        self.clients: dict[str, Client] = {}
+        self.mcp_tools: dict[str, Any] = {}  # qualified name -> reviewed MCP tool definition
+        self.blocked: set[str] = set()
+        self.catalog: dict[str, list] = {"approved": [], "refused": [], "ignored_servers": [], "warnings": []}
+        self.stack = AsyncExitStack()
+        self.checkpoint.data.setdefault("events", [])
+
+    # Catalog review -------------------------------------------------------------------------------------
+
+    async def __aenter__(self) -> Gateway:
+        lock = json.loads(LOCK.read_text(encoding="utf-8"))
+        wanted = {name for names in CALLER_TOOLS.values() for name in names if "." in name and not name.startswith("memory.")}
         try:
-            for name, server in build_servers(self.tools, names=list(MCP_ALLOW)).items():
+            for server_name, server in build_servers(self.tools).items():
+                reviewed = lock.get(server_name)
+                if reviewed is None:
+                    self.catalog["ignored_servers"].append(f"{server_name}: not reviewed for this project; never connected")
+                    continue
                 client = await self.stack.enter_async_context(Client(server))
-                self.clients[name] = client
+                self.clients[server_name] = client
+                version = getattr(client.server_info, "version", None)
+                if version and version != reviewed["version"]:
+                    self.catalog["warnings"].append(f"{server_name} reports version {version}, reviewed {reviewed['version']}")
                 for tool in await client.list_tools():
-                    digest = hashlib.sha256((tool.description or "").encode()).hexdigest()[:12]
-                    if tool.name in MCP_ALLOW[name] and lock.get(name, {}).get(tool.name) == digest:
-                        self.approved.add((name, tool.name))
+                    qualified = f"{server_name}.{tool.name}"
+                    if qualified not in wanted:
+                        continue  # least privilege: other tools of the server are never offered
+                    if reviewed["tools"].get(tool.name) == tool_hashes(tool.description, tool.input_schema):
+                        self.mcp_tools[qualified] = tool
+                        self.catalog["approved"].append(qualified)
+                    else:
+                        self.catalog["refused"].append(f"{qualified}: description or input schema differs from the reviewed lock")
             return self
         except BaseException:
             await self.stack.aclose()
             raise
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc) -> None:
         await self.stack.aclose()
 
-    async def _execute(self, server: str, name: str, args: dict) -> dict:
-        if server == "native":
-            if name not in NATIVE_ALLOW:
-                raise ToolFailure(f"Tool not exposed: {name}")
-            result = getattr(self.tools, name)(**args)
-        else:
-            if (server, name) not in self.approved:
-                raise ToolFailure(f"MCP tool not reviewed or description changed: {server}.{name}")
-            if (server, name) in self.blocked:
-                raise ToolFailure(f"MCP scope previously refused: {server}.{name}")
-            response = await self.clients[server].call_tool(name, args)
-            # FastMCP validates the protocol response; validate our object boundary too.
-            result = response.data
-            if not isinstance(result, dict):
-                result = json.loads(response.content[0].text)
-        if not isinstance(result, dict):
-            raise ToolFailure(f"Invalid result from {server}.{name}: expected an object")
-        result = redact(result)
-        if result.get("error") == "insufficient_scope":
-            self.blocked.add((server, name))
-        return result
+    # Calls ----------------------------------------------------------------------------------------------
 
-    async def call(self, tool_name: str, *, server: str = "native", **args) -> dict:
-        # Persist intent before touching the simulator, including before a lost response.
-        event = {"server": server, "name": tool_name, "args": args, "actor": self.tools.actor}
-        self.checkpoint.data["events"].append(event)
-        self.checkpoint.save()
+    async def _execute(self, name: str, args: dict[str, Any]) -> Any:
+        if name in self.local_tools:
+            return self.tools.record_call(name, args, lambda: self.local_tools[name](**args))
+        if "." not in name:
+            return getattr(self.tools, name)(**args)
+        if name not in self.mcp_tools:
+            return {"error": f"{name} is not in the reviewed catalog (unreviewed, changed or not selected)"}
+        if name in self.blocked:
+            return {"error": f"{name} was refused for lack of scope earlier in this run; not retried"}
+        server, tool = name.split(".", 1)
         try:
-            result = await self._execute(server, tool_name, args)
-        except Exception as error:
-            result = {"error": str(error), "retryable": False}
-        event["result"] = result
-        self.checkpoint.save()
-        return result
+            response = await self.clients[server].call_tool(tool, args)
+        except ToolError as error:
+            return {"error": str(error)}
+        if isinstance(response.data, dict):
+            return response.data
+        return json.loads(response.content[0].text) if response.content else {"error": "empty MCP response"}
 
-    async def replay(self) -> None:
-        """Reconstruct this run from the pinned scenario and tool intents."""
-        for event in self.checkpoint.data["events"]:
-            current_actor = self.tools.actor
-            self.tools.actor = event["actor"]
+    async def call(self, tool: str, /, *, caller: str = "harness", **args: Any) -> dict[str, Any]:
+        name = tool
+        if name not in CALLER_TOOLS.get(caller, set()):
+            return {"error": f"{caller} may not use {name}"}
+        if name in CLAMPS:
+            key, limit = CLAMPS[name]
+            if key in args and isinstance(args[key], int):
+                args[key] = max(1, min(args[key], limit))
+        for attempt in (1, 2):
+            events = self.checkpoint.data["events"]
+            ref = f"T{len(events) + 1:02d}"
+            event = {"ref": ref, "caller": caller, "tool": name, "args": args, "actor": self.tools.actor, "attempt": attempt}
+            events.append(event)
+            self.checkpoint.save()  # write-ahead: the intent is durable before the systems are touched
             try:
-                actual = await self._execute(event["server"], event["name"], event["args"])
-            except Exception as error:
-                actual = {"error": str(error), "retryable": False}
-            finally:
-                self.tools.actor = current_actor
-            if "result" in event and actual != event["result"]:
-                raise ToolFailure("Replay diverged; restore the original code/catalog before resuming")
-            event["result"] = actual
-        self.checkpoint.save()
+                result = await self._execute(name, dict(args))
+            except (TypeError, ValueError) as error:  # bad arguments from a model: tell it, do not crash
+                result = {"error": f"invalid arguments for {name}: {error}"}
+            if not isinstance(result, dict):
+                result = {"error": f"{name} returned {type(result).__name__}, expected an object"}
+            result = redact(result)
+            if result.get("error") == "insufficient_scope":
+                self.blocked.add(name)
+            event["result"] = result
+            self.checkpoint.save()
+            if not result.get("retryable") or attempt == 2:
+                return {"ref": ref, **result}
+        raise AssertionError("unreachable")
+
+    # Evidence -------------------------------------------------------------------------------------------
+
+    def refs(self, caller: str | None = None) -> set[str]:
+        return {event["ref"] for event in self.checkpoint.data["events"]
+                if "result" in event and not event["result"].get("error") and (caller is None or event["caller"] == caller)}
+
+    def result(self, ref: str) -> dict[str, Any] | None:
+        return next((event.get("result") for event in self.checkpoint.data["events"] if event["ref"] == ref), None)
 
 
-def require(result: dict) -> dict:
+def require(result: dict[str, Any]) -> dict[str, Any]:
     if result.get("error"):
-        raise ToolFailure(str(result["error"]))
+        raise ToolFailure(f"{result.get('ref', '')} {result['error']}".strip())
     return result

@@ -1,142 +1,136 @@
-# Meridian Incident Response — final project starter
+# Meridian Incident Response
 
-A portable boilerplate for the **Meridian Exchange** proposal in *Agentic AI: Da Arquitetura à Implementação*. Run everything from this folder. It includes a copy of the course simulator, so it has no imports or paths into the parent course repository.
+An agent team that handles incidents on the **Meridian Exchange**, the fictional stock exchange simulated in the course
+*Agentic AI: Da Arquitetura à Implementação* (Course 2 final project, common proposal).
 
-**Start with [the project explanation](docs/PROJECT_BRIEF.md).** It translates the PDF into concrete behavior, deliverables and a requirement checklist. This starter is a working baseline to extend, not a claim that the final assessment is complete.
+Given an alert, a ticket or a member complaint, three specialist agents correlate the sources, investigate and propose a
+runbook mitigation. An orchestrator decides what happens next. Code then checks authority, re-reads fresh evidence,
+obtains approval, acts **once** with an idempotency key, confirms the effect with the executor, verifies recovery
+against the runbook criterion and records the outcome on the incident ticket and in memory.
 
-For the verbal Meridian introduction, see [lecture topics and suggested focus](docs/FOCUS_TOPICS.md). It maps the supplied sessions 1–7 to project features and reflects the trainer's clarification that the proposal diagram can be omitted.
+> **Status: milestone 1** (first-line incident agent). Milestones 2 and 3 are in progress. Apart from this README and
+> `docs/ATTRIBUTION.md`, the files in `docs/` still describe the generated starter (`v0-starter`) and are being rewritten.
 
 ## Quick start
 
-Python **3.10 on Linux** matches the environment used to produce `requirements.lock`. The code declares Python >=3.10; other Python/OS combinations need their own resolved lock and validation.
+Python 3.10 on Linux is the environment `requirements.lock` was produced and tested in.
 
 ```bash
-cd meridian-incident-response
-python3.10 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.lock
+python3.10 -m venv .venv && source .venv/bin/activate
+python -m pip install -r requirements.lock          # or: uv venv && uv pip install -r requirements.lock
 
-# Offline fixture: real simulator + real in-process MCP, zero model requests.
-python -m incident_response \
-  --scenario cases/s03-alert-and-ticket.yaml --run-dir runs/demo
+# Offline: deterministic specialists, real simulator, real in-process MCP, no model calls.
+python -m incident_response run --scenario cases/s03-alert-and-ticket.yaml --run-dir runs/demo
 ```
 
-Expected: `status: recovered`, one restart of `order-gateway-2`, and post-action metric references. A fresh run needs a fresh `--run-dir`. Runtime files and SQLite memory live in ignored `runs/`.
+Expected: `status: recovered`, MRX-2210 as the incident ticket with MEM-1187 related, one restart of
+`order-gateway-2` and verification references. Each run needs a new `--run-dir`. Everything a run writes stays in the
+ignored `runs/` folder.
 
-For real agents, create a local `.env` from `.env.example` and fill in your API key:
+With models (each run makes several requests on your API account):
 
 ```bash
-cp .env.example .env
-# Edit .env before running this command. Model requests use your API account.
-python -m incident_response --mode llm \
-  --scenario cases/s03-alert-and-ticket.yaml --run-dir runs/llm-demo
+cp .env.example .env        # then set OPENAI_API_KEY
+python -m incident_response run --mode llm --scenario cases/s03-alert-and-ticket.yaml --run-dir runs/llm-demo
+python -m incident_response run --mode llm --coordination pipeline --scenario ... --run-dir ...
 ```
 
-`OPENAI_MODEL` defaults to the model used in the course examples. Select a model available to your account. The three agents share a limit of 12 requests and 30,000 tokens per planning invocation. Failures produce a controlled report and retain the checkpoint. Live API behavior has not been validated by this starter's offline checks.
+Pause and resume in another process. The simulated systems are saved apart from the agent's checkpoint, and authority
+is checked again on resume:
 
-The CLI returns exit code 0 for recovered or intentionally paused runs, and 2 for refused, inconclusive or unrecovered runs. Those latter statuses can be the correct expected behavior for a failure case.
+```bash
+python -m incident_response run --scenario cases/s02-lost-response.yaml --run-dir runs/resume --pause-after action
+python -m incident_response resume --run-dir runs/resume
+python -m incident_response run --scenario cases/s03-alert-and-ticket.yaml --run-dir runs/role --pause-after plan
+python -m incident_response resume --run-dir runs/role --role settlement-analyst     # refused, no effect
+```
 
-## What is wired up
+Exit code 0 means recovered, resolved or paused. Exit code 2 means escalated, refused, not recovered or insufficient
+information, which is the correct outcome for several failure cases.
+
+## How it works
 
 ```mermaid
-flowchart TD
-    CLI[Incident CLI] --> Harness[Harness and checkpoint journal]
-    Harness --> Context[Selected metrics, links, logs, runbook and memory]
-    Context --> Orchestrator[Orchestrator agent]
-    Orchestrator --> Investigator[Gateway specialist]
-    Investigator --> Orchestrator
-    Orchestrator --> Reviewer[Dependency and safety specialist]
-    Reviewer --> Orchestrator
-    Orchestrator --> Plan[Validated combined plan]
-    Plan --> Policy[Code permissions, fresh evidence and simulated approval]
-    Policy --> Executor[Idempotent simulator action]
-    Executor --> Verification[Fresh recovery metrics]
-    Verification --> Report[Report, trace and memory]
-    Harness --> MCP[Reviewed read-only MCP tools]
-    MCP --> Simulator[Supplied Meridian simulator]
-    Executor --> Simulator
+flowchart LR
+    I[Alert / ticket / complaint] --> O{{Orchestrator agent}}
+    O -->|question| T[Triage<br/>alerts, tickets via MCP]
+    O -->|question + triage| V[Investigator<br/>metrics, logs, changes,<br/>runbooks, memory]
+    O -->|exact proposal| R[Reviewer<br/>links, reference-db,<br/>trading session]
+    O --> D[Decision: act / no action / escalate]
+    D --> C[Code: authority -> fresh evidence -> approval]
+    C --> X[Action once, idempotency key -> executor status]
+    X --> W[Verify recovery: runbook criterion]
+    W --> K[Ticket comment or new incident + memory]
 ```
 
-The harness collects bounded evidence before delegation. The investigator diagnoses gateway pressure; the reviewer checks dependencies and the exact proposal. In LLM mode the orchestrator calls both specialists as tools, and code rejects a plan that changes or omits their results. Specialists have no mutation tools. The harness controls execution and verification.
+| Part | Responsibility |
+|---|---|
+| `incident_response/agents.py` | The three LLM specialists, each with its own read-only toolset and validated output, plus two coordinators: an **orchestrator** agent whose tools are the specialists, and a fixed **pipeline**. Output validators reject evidence refs no tool returned and ticket keys triage never saw. |
+| `incident_response/rules.py` | Deterministic specialists with the same contracts and permissions (`--mode fixture`): offline runs, tests, reference baseline. |
+| `incident_response/gateway.py` | The only path to the systems. Per-caller allowlists (specialists read; only code mutates), reviewed MCP tools pinned by description and schema hash, unreviewed servers never connected, list sizes clamped, write-ahead journal, one retry on retryable errors, scope refusals remembered, personal data masked, evidence refs (`T01`...). |
+| `incident_response/policy.py` | Authority in code: role and target, approver role, matching approval. An approval never grants a role. |
+| `incident_response/guards.py` | Runbook criteria in code: fresh evidence before acting, recovery verification after. |
+| `incident_response/workflow.py` | Phases, checkpoint, action/verification, ticket update, report. |
+| `incident_response/world.py` | The simulated systems, persisted after every call (`world.pkl`) apart from the agent's checkpoint. |
+| `incident_response/memory.py` | Memory policy: code-built summaries of verified recoveries only, team isolation, confidence, validity, correction, deletion. |
+| `meridian/` | Course simulator, tools and MCP servers, copied unchanged (see [attribution](docs/ATTRIBUTION.md)). |
 
-The fixture mode follows a deterministic rule through the same contracts and executor. It is useful for setup and safety checks. It does **not** demonstrate LLM reasoning, autonomous tool selection or reliable resistance to prompt injection.
-
-## Resume demonstration
-
-```bash
-python -m incident_response --scenario cases/s02-lost-response.yaml \
-  --run-dir runs/resume-demo --pause-after action
-python -m incident_response --run-dir runs/resume-demo --resume
-```
-
-The first action is applied but its response is lost by the simulator. The harness queries `action_status` with a stable key. Resume reconstructs the local simulated world from journaled tool intents, rechecks current permissions and the action's approval, then verifies recovery. There is one mitigation effect in the reconstructed world.
-
-Try `--pause-after plan`, then resume with `--role settlement-analyst`: the new role must be refused. A resumed LLM run uses its saved model selection. A completed report is returned as recorded. Use one process per run directory.
-
-This replay mechanism is specific to the deterministic, local simulator. It is **not** a production checkpoint backend for real infrastructure. [Architecture and policies](docs/ARCHITECTURE.md) explains the boundary.
+Main policies:
+- Specialists cannot change anything. Mutations (approval requests, restart, rollback, ticket writes) are harness code only.
+- `first-line` may act only on non-critical components. A critical target (matching-engine, reference-db) is refused
+  and escalated. Every action needs a matching approval, from the incident manager for critical targets during the
+  trading session.
+- A restart needs fresh readings showing that instance above 90% memory, with the dependency links up and reference-db
+  healthy. A rollback needs an active change that a log line names. Timing alone is reported as a suspected cause and
+  escalated.
+- "Recovered" means three consecutive healthy readings after the action. "Resolved" means healthy now, with no action
+  needed.
 
 ## Evaluation
 
 ```bash
-python -m pytest -q
-python scripts/evaluate.py --output runs/fixture-baseline
-
-# After configuring .env, measure the actual agents repeatedly:
-python scripts/evaluate.py --mode llm --repeat 3 --output runs/llm-v1
+python -m pytest -q                                          # 26 behavioural tests, no network
+python scripts/evaluate.py --output runs/eval-fixture        # all cases, course checks
+python scripts/evaluate.py --mode llm --repeat 3 --output runs/eval-llm
+python scripts/evaluate.py --compare evidence/v0-starter runs/eval-fixture
 ```
 
-Six seeded cases cover gateway pressure, unavailable metrics, a lost action response, multiple sources, refused approval and an injected log. Expected outcomes are held by the evaluator, outside model context. Evaluations use a fresh simulator and memory database per case. The evaluator checks expected status, the effect count and the action target; `checks/` also preserves four supplied course check files for extending evaluation with `meridian.evaluate`.
+`cases/` holds the 20 public course cases (sessions 1–4) and two project cases. Each case is scored with its
+`checks/<id>.yaml` by the course's own `meridian.evaluate`. The checks cover the report claim, required reads,
+forbidden and maximum effects, ticket updates, memory contents, personal data sent to the model, token budget and
+recovery held for several ticks. Every case starts from a fresh simulator and memory, except the ordered day-1/day-2
+memory sequence.
 
-Tests additionally exercise interrupted resume, changed permissions, MCP description drift, memory correction/isolation/expiry and three-agent wiring with a scripted local model. Unit tests are included for these important boundaries, though the brief does not require writing a unit-test suite or metrics framework from scratch.
+| Version | Mode | Cases passing every check |
+|---|---|---|
+| `baseline` (starter + evaluator) | fixture | 14/22 ([results](evidence/v0-starter/results.md)) |
+| `milestone-1` | fixture | 22/22 ([results](evidence/milestone-1/results.md), [comparison](evidence/milestone-1/comparison.md)) |
 
-The initial local checks passed: **12 tests and 6 offline evaluation cases**. See [validation scope and results](docs/VALIDATION.md) and the representative artifacts in `evidence/fixture-baseline/`.
+The fixture specialists are deterministic rules written with knowledge of these public cases. The fixture results show
+that the harness, guards, MCP and evaluation plumbing work. **They are not a measure of the LLM agents.** Repeated LLM
+runs on the same cases are the next step.
 
-Checkpoint artifacts record inputs, selected context, plans, masked tool events, executor audit, approvals and final report. LLM runs also record messages and aggregate request/token usage. Review and copy selected, sanitized artifacts out of ignored `runs/` for submission. [Demo and evaluation guide](docs/DEMO.md) covers comparison and evidence.
+## Current limits
 
-## Where to work
+- The LLM mode is tested with a scripted local model only and has not yet been run against a real model.
+- Two action types (`restart_instance`, `rollback_change`), one action per incident. There is no correction attempt
+  after a refusal or a failed recovery yet.
+- Resume supports pause points. Crash injection, time passing during the interruption and approval expiry are milestone 3.
+- Approvals are simulated by the scenario's approver policy.
+- If a selected ticket or alert tool's description changes, triage fails closed (`insufficient_information`) rather
+  than risk duplicate incident tickets.
 
-| Path | Purpose |
+## Versions
+
+| Tag | Content |
 |---|---|
-| `incident_response/agents.py` | Three-agent wiring and deterministic baseline |
-| `incident_response/contracts.py` | Validated specialist, plan, metrics and report contracts |
-| `incident_response/workflow.py` | Context selection, evidence checks, orchestration, action and recovery |
-| `incident_response/gateway.py` | MCP allowlist, description lock, scope refusals, journal and email masking |
-| `incident_response/policy.py` | Permissions enforced outside the model |
-| `incident_response/memory.py` | Team isolation, expiry, provenance and correction policy |
-| `incident_response/state.py` | Atomic local checkpoint writes |
-| `meridian/` | Supplied course infrastructure; see [source attribution](docs/ATTRIBUTION.md) |
-| `cases/`, `checks/`, `tests/` | Inputs, separate course expectations and behavioral checks |
-| `docs/ROADMAP.md` | Remaining work organized by the three milestones |
-| `docs/PROPOSAL.md` | Filled-in starting proposal to review and adapt |
+| `v0-starter` | Generated starter, unchanged |
+| `baseline` | Starter + evaluator with the course checks; baseline results |
+| `milestone-1` | First-line incident agent: specialists with tools/MCP, correlation, guarded actions, verification |
 
-## Current scope and limits
+## AI assistance
 
-- Implements the gateway memory-pressure mitigation only. Restart mitigates the symptom; it does not repair the memory leak. Rollback and other components need their own evidence guards, verification rules and cases.
-- Context collection and two specialist responsibilities are deliberately fixed. Extend routing, follow-up investigation, source correlation and degraded-service handling as your own project work.
-- Every mutation requires a simulated approval. `first-line` may restart only noncritical instances; approval cannot override its role. Whole-service restart tools are not exposed.
-- Memory writes only verified incident summaries with provenance and seven-day validity. Recall filters team, confidence, superseded/future/expired records. Correction is an operator function; a full handover/deletion UI is not wired.
-- MCP is functional in-process, with reviewed read-only tools and a description hash lock. Server metadata/schema pinning and remote transport are future extensions.
-- Email masking is illustrative. Broader personal-data handling and adversarial LLM tests remain work to do.
-- Checkpoints assume one local writer, trusted local files, the same simulator code and deterministic inputs. Replayed tool results must match. External-service persistence and distributed execution require a different adapter.
-
-## Dependencies and moving to GitHub
-
-`requirements.lock` pins the installed transitive dependency closure, including development tools, for the documented Python/Linux environment. `pyproject.toml` declares direct dependencies. To intentionally update dependencies, resolve/install the direct requirements in a fresh environment, validate it, then run `python scripts/lock_dependencies.py` there. The snapshot script checks installed compatibility; it is not a dependency resolver or a hash-verifying supply-chain lock.
-
-The submission target is a **public GitHub repository** so evaluators can access the project. Copy or move **this entire folder**, including hidden files, to the destination. There is no nested `.git`, `.env`, virtual environment, or parent-relative import to carry along. After moving it outside the course Git repository:
-
-```bash
-git init
-git add .
-git commit -m "Start Meridian incident-response project"
-# Create an empty PUBLIC repository on GitHub, then use its actual URL:
-git remote add origin <your-github-repository-url>
-git branch -M main
-git push -u origin main
-```
-
-If copying it into an existing public repository, use that repository's existing Git setup. Preserve attribution for the supplied simulator. Before submission, verify that the repository and README are accessible while signed out of GitHub. Keep API keys in the ignored local `.env` file.
-
-## AI assistance declaration
-
-This starter was generated with OpenAI Codex assistance on 15 November 2026 after reviewing the local project brief and course exercises. Its simulator and four course cases/checks are copied from the supplied material. Record your subsequent AI use, architectural decisions, changes and validation here; be prepared to explain the code you submit.
+- The starter (`v0-starter`) was generated with OpenAI Codex on 15 November 2026.
+- On 24 November 2026, Claude Code (Claude Opus 5.5) reviewed it against the brief and the course material. It also
+  wrote the evaluator, the agent-layer rewrite for milestone 1, the tests and this README, at the student's direction.
+- The working plan is in `CLAUDE.md`.
