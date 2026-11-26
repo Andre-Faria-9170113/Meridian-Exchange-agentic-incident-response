@@ -109,3 +109,14 @@ def test_memory_operator_cli(tmp_path):
     assert fixed.author == "rita.alves" and fixed.created_at > record.created_at  # on the store's clock, not wall time
     assert cli("forget", fixed.memory_id, "--reason", "vendor fixed it").returncode == 0
     assert "vendor fixed it" in cli("list", "--all").stdout
+
+
+def test_recall_includes_what_the_component_depends_on(tmp_path):
+    deps = deps_for("first-line", tmp_path)
+    deps.sim.advance(5)
+    note = deps.memory.add(kind="shift_note", subject="reference-db", content="CHG-9 still active", source_type="user",
+                           source_ref="rita.alves", author="rita.alves", team="trading-ops", created_at="2026-11-04 08:00",
+                           valid_until="2026-11-10 00:00", confidence=0.9)
+    hints = recall(deps, "order-gateway")
+    assert "reference-db" in hints["subjects"] and [h["memory_id"] for h in hints["hints"]] == [note.memory_id]
+    assert recall(deps, "order-gateway-2")["subjects"] == ["order-gateway-2"]  # not a component: that subject only

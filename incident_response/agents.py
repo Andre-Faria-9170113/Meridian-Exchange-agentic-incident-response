@@ -116,9 +116,15 @@ If an answer is unclear or contradicts another specialist, ask one follow-up que
 # Specialist tools: every one goes through the gateway as its caller --------------------------------------------
 
 
-# Reads one specialist answer may make. Every read costs exchange time while the incident gets worse, and prompts
-# alone did not stop gpt-4.1-mini from making 24-31 reads where the procedure needs about 10 (evidence/ notes).
-READ_BUDGET = {"triage": 3, "investigator": 6, "reviewer": 5}
+# Reads one specialist answer may make, taken from what its procedure needs. Every read (memory recall included)
+# costs a simulated minute while the incident gets worse, and prompts alone did not stop gpt-4.1-mini from making
+# 24-31 reads where the procedures need about 10.
+# - triage: alerts, ticket search, one ticket.
+# - investigator: metrics, runbook list, runbook, memory, then on the change branch recent changes and a log search
+#   by change id, plus one spare.
+# - reviewer: two dependency links, reference-db, trading session; a rollback adds "is the change still active".
+READ_BUDGET = {"triage": 3, "investigator": 7, "reviewer": 4}
+REVIEW_BUDGET = {"restart_instance": 4, "rollback_change": 5}
 
 
 @dataclass
@@ -128,7 +134,11 @@ class Seat:
     gateway: Gateway
     caller: str
     scope: str | None = None  # investigator: the component triage named; dependency health is the reviewer's check
+    budget: int = 0  # reads for this answer; 0 means the caller's default
     seen: dict[str, str] = field(default_factory=dict)  # call signature -> ref of the earlier result
+
+    def __post_init__(self):
+        self.budget = self.budget or READ_BUDGET[self.caller]
 
     async def call(self, tool: str, /, **args: Any) -> dict:
         args = {k: v for k, v in args.items() if v is not None}
@@ -141,7 +151,7 @@ class Seat:
             reason, message = "scope", (f"You investigate {self.scope}; the reviewer checks dependencies. For errors, "
                                         "list recent changes (all components) and search the logs for their change ids.")
         elif self.spent:  # only reachable with several calls in one response: tools are withdrawn once spent
-            reason, message = "budget", (f"Read budget used ({READ_BUDGET[self.caller]} reads for one answer). Answer "
+            reason, message = "budget", (f"Read budget used ({self.budget} reads for one answer). Answer "
                                          "now with the evidence you have; if it is not enough, say what is missing.")
         if reason:  # nothing is read, so no time passes; kept for the monitors and the trace
             self.gateway.checkpoint.data.setdefault("limited_calls", []).append(
@@ -155,7 +165,7 @@ class Seat:
 
     @property
     def spent(self) -> bool:
-        return len(self.seen) >= READ_BUDGET[self.caller]
+        return len(self.seen) >= self.budget
 
 
 async def read_metrics(ctx: RunContext[Seat], component: str, window_ticks: int = 5, per_instance: bool = True) -> dict:
@@ -244,6 +254,31 @@ def latest_reading(gateway: Gateway, component: str) -> tuple[str, Reading] | No
     return None
 
 
+def unsearched_change(seat: Seat, finding: Finding) -> str | None:
+    """On the errors branch, the investigator must have looked for the evidence a rollback needs: a log line naming
+    the change (the same rule `guards.evidence_refusal` applies before acting). gpt-4.1-mini searched logs by level
+    and missed a WARN line naming the change (s02-firewall-change). None when nothing is missing."""
+    if finding.cause_kind in ("instance_memory", "no_fault"):
+        return None
+    seen = latest_reading(seat.gateway, finding.component)
+    if seen is None or seen[1].error_rate < 0.01:
+        return None
+    mine = [event for event in seat.gateway.checkpoint.data["events"] if event["caller"] == seat.caller]
+    listed = [event["result"]["changes"] for event in mine
+              if event["tool"] == "recent_changes" and isinstance((event.get("result") or {}).get("changes"), list)]
+    if not listed:
+        return (f"{finding.component} has errors ({seen[0]}): list recent changes for all components and search the "
+                "logs for their change ids before concluding.")
+    active = [change["change_id"] for change in listed[-1] if change.get("active")]
+    target = finding.change_id or (finding.proposal.target if finding.proposal.action == "rollback_change" else None)
+    target = target or (active[0] if active else None)
+    searched = {event["args"].get("contains") for event in mine if event["tool"] == "read_logs"}
+    if target and target not in searched:
+        return (f"Before concluding, search the logs for {target} (read_logs with contains='{target}' and no level "
+                "filter): a log line naming the change is the evidence a rollback needs.")
+    return None
+
+
 def specialist(model: Any, caller: str, output_type: type, instructions: str, gateway: Gateway) -> Agent:
     # Once the read budget is spent the tools are withdrawn, so the only move left is to answer. Refusing calls was not
     # enough: gpt-4.1-mini kept calling refused tools until its request cap and gave no answer at all.
@@ -271,6 +306,10 @@ def specialist(model: Any, caller: str, output_type: type, instructions: str, ga
             if seen and not healthy(output.component, seen[1]):
                 raise ModelRetry(f"no_fault contradicts {seen[0]}: {output.component} latency {seen[1].latency_ms} ms, "
                                  f"error rate {seen[1].error_rate:.1%}. That is a fault: follow the matching branch.")
+        if isinstance(output, Finding) and not ctx.deps.spent:  # only demand what can still be read
+            missing = unsearched_change(ctx.deps, output)
+            if missing:
+                raise ModelRetry(missing)
         return output
 
     return agent
@@ -309,24 +348,39 @@ class LLMSpecialists:
         self.agents = {"triage": specialist(model, "triage", Correlation, TRIAGE, crew.gateway),
                        "investigator": specialist(model, "investigator", Finding, INVESTIGATOR, crew.gateway),
                        "reviewer": specialist(model, "reviewer", Review, REVIEWER, crew.gateway)}
+        self.sessions: dict[str, tuple[str, Seat, list]] = {}  # caller -> (subject, seat, conversation so far)
 
-    async def _ask(self, caller: str, prompt: str, scope: str | None = None):
+    async def _ask(self, caller: str, prompt: str, subject: str, scope: str | None = None, budget: int | None = None):
+        """One specialist answer. A follow-up on the same subject continues the earlier conversation with the same
+        reads and budget, so it answers from what was already read instead of reading it all again (seen with
+        gpt-4.1-mini: a follow-up re-read metrics, runbooks and changes). A new subject, a correction or a failed
+        answer starts fresh."""
         usage, trace = RunUsage(), self.crew.messages.setdefault(caller, [])
         limits = specialist_limits(self.crew.usage)
+        session = self.sessions.get(caller)
+        if session is None or session[0] != subject:
+            session = (subject, Seat(self.crew.gateway, caller, scope, budget or READ_BUDGET[caller]), [])
+        _, seat, history = session
+        self.sessions.pop(caller, None)  # restored only if this answer succeeds
         with capture_run_messages() as messages:  # kept on failure too: a failed specialist must stay in the trace
             try:
-                result = await self.agents[caller].run(prompt, deps=Seat(self.crew.gateway, caller, scope), usage=usage,
+                result = await self.agents[caller].run(prompt, deps=seat, message_history=history or None, usage=usage,
                                                        usage_limits=limits)
             finally:
                 self.crew.usage.incr(usage)
                 trace.append(as_json(messages))
+        self.sessions[caller] = (subject, seat, result.all_messages())
         return result.output
+
+    def forget_sessions(self) -> None:
+        """A correction needs fresh reads: the world has moved on since."""
+        self.sessions.clear()
 
     def _incident(self) -> str:
         return f"Incident {self.crew.brief['incident_id']} at {self.crew.brief['time']}: {self.crew.brief['summary']}"
 
     async def triage(self, question: str = "") -> Correlation:
-        return await self._ask("triage", f"{self._incident()}\n\n{question}".strip())
+        return await self._ask("triage", f"{self._incident()}\n\n{question}".strip(), subject="incident")
 
     async def investigate(self, correlation: Correlation, excluded: set[tuple[str, str]], note: str, question: str = "") -> Finding:
         parts = [self._incident(), f"Triage: {correlation.model_dump_json()}"]
@@ -337,7 +391,8 @@ class LLMSpecialists:
             parts.append(f"Why a correction is needed: {note}")
         if question:
             parts.append(question)
-        return await self._ask("investigator", "\n\n".join(parts), scope=correlation.component)
+        subject = json.dumps([correlation.model_dump(), sorted(excluded), note], default=str)
+        return await self._ask("investigator", "\n\n".join(parts), subject, scope=correlation.component)
 
     async def review(self, finding: Finding, question: str = "") -> Review:
         parts = [self._incident(), f"Proposal to review (exact): {finding.model_dump_json()}"]
@@ -348,7 +403,8 @@ class LLMSpecialists:
                              f"{result['text']}")
         if question:
             parts.append(question)
-        return await self._ask("reviewer", "\n\n".join(parts))
+        return await self._ask("reviewer", "\n\n".join(parts), subject=finding.model_dump_json(),
+                               budget=REVIEW_BUDGET[finding.proposal.action])
 
 
 # Coordinators -----------------------------------------------------------------------------------------------------
@@ -374,6 +430,8 @@ class Pipeline:
     async def correct(self, reason: str, failed: tuple[str, str]) -> Plan:
         self.crew.excluded.add(failed)
         self.crew.note = reason
+        if isinstance(self.specialists, LLMSpecialists):
+            self.specialists.forget_sessions()
         return await self.plan()
 
 
@@ -464,6 +522,7 @@ class Orchestrator:
     async def correct(self, reason: str, failed: tuple[str, str]) -> Plan:
         self.crew.excluded.add(failed)
         self.crew.note = reason
+        self.specialists.forget_sessions()
         return await self._run(f"Correction needed: {failed[0]} {failed[1]} cannot be used. Reason: {reason}\n"
                                "Ask the investigator for a different mitigation within authority (it will be told what "
                                "to avoid), have it reviewed, then decide again. Escalate if there is none.")

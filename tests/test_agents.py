@@ -35,9 +35,10 @@ def answer(info, data):
 
 class Script:
     def __init__(self, fake_ref_once=False, reviewer_fails=False, act_without_review=False, reviewer_loops=False,
-                 triage_repeats=False, strays=False):
+                 triage_repeats=False, strays=False, follow_up=False):
         self.fake_ref_once, self.reviewer_fails, self.act_without_review = fake_ref_once, reviewer_fails, act_without_review
         self.reviewer_loops, self.triage_repeats, self.strays = reviewer_loops, triage_repeats, strays
+        self.follow_up = follow_up
 
     async def __call__(self, messages, info):
         instructions, done = info.instructions or "", returns(messages)
@@ -80,6 +81,8 @@ class Script:
             return call("ask_triage", {"question": "Which component and tickets?"})
         if "ask_investigator" not in asked:
             return call("ask_investigator", {"question": "Cause and proposal?"})
+        if self.follow_up and asked.count("ask_investigator") == 1:
+            return call("ask_investigator", {"question": "Are you sure about the instance?"})
         if self.act_without_review and not retried(messages):
             return answer(info, {"decision": "act", "rationale": "skipping review"})
         if "ask_reviewer" not in asked:
@@ -154,3 +157,35 @@ def test_orchestrator_cannot_act_without_a_review(tmp_path):
 def test_pipeline_with_llm_specialists(tmp_path):
     report, state, effects = execute(tmp_path, Script(), coordination="pipeline")
     assert report["status"] == "recovered" and "orchestrator" not in state["model_messages"]
+
+
+def test_follow_up_answers_from_what_was_read_without_reading_again(tmp_path):
+    report, state, effects = execute(tmp_path, Script(follow_up=True))
+    assert report["status"] == "recovered" and len(effects) == 1
+    assert len(state["model_messages"]["investigator"]) == 2  # two answers ...
+    assert [e["tool"] for e in state["events"] if e["caller"] == "investigator"] == ["read_metrics"]  # ... one read
+
+
+def test_errors_finding_must_have_searched_the_logs_for_the_change():
+    from types import SimpleNamespace
+
+    from incident_response.agents import unsearched_change
+    from incident_response.contracts import Finding
+
+    reading = {"tick": 1, "latency_ms": 5.0, "error_rate": 0.4, "instances": {}}
+    events = [{"ref": "T01", "caller": "investigator", "tool": "read_metrics", "args": {},
+               "result": {"component": "order-gateway", "readings": [reading]}}]
+    seat = SimpleNamespace(gateway=SimpleNamespace(checkpoint=SimpleNamespace(data={"events": events})), caller="investigator")
+    finding = Finding(component="order-gateway", cause_kind="dependency", cause="reference-db unavailable",
+                      evidence=["T01"], proposal={"action": "none", "reason": "dependency"})
+    assert "list recent changes" in unsearched_change(seat, finding)
+    events.append({"ref": "T02", "caller": "investigator", "tool": "recent_changes", "args": {},
+                   "result": {"changes": [{"change_id": "CHG-1", "active": True}, {"change_id": "CHG-0", "active": True}]}})
+    events.append({"ref": "T03", "caller": "investigator", "tool": "read_logs", "args": {"level": "ERROR"}, "result": {}})
+    assert "contains='CHG-1'" in unsearched_change(seat, finding)  # searching by level is not searching for the change
+    events.append({"ref": "T04", "caller": "investigator", "tool": "read_logs", "args": {"contains": "CHG-1"}, "result": {}})
+    assert unsearched_change(seat, finding) is None
+    named = finding.model_copy(update={"cause_kind": "change", "change_id": "CHG-0"})
+    assert "CHG-0" in unsearched_change(seat, named)  # the change it names must be the one searched
+    memory = finding.model_copy(update={"cause_kind": "instance_memory"})
+    assert unsearched_change(seat, memory) is None
