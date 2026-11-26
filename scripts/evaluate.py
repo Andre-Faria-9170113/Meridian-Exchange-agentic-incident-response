@@ -73,7 +73,7 @@ async def run_case(case: str, directory: Path, memory_path: Path, args) -> dict:
     error = None
     try:
         report = await run(ROOT / "cases" / f"{case}.yaml", directory, mode=args.mode, model=args.model,
-                           memory_path=memory_path, observe=lambda tools: observed.setdefault("tools", tools))
+                           coordination=args.coordination, memory_path=memory_path, observe=lambda tools: observed.setdefault("tools", tools))
     except Exception as exc:  # noqa: BLE001 - a crash is a result to record, not a reason to stop the suite
         report, error = {"status": "crashed", "summary": f"{type(exc).__name__}: {exc}"}, f"{type(exc).__name__}: {exc}"
     seconds = round(time.perf_counter() - started, 2)
@@ -115,6 +115,7 @@ async def evaluate_suite(args) -> dict:
                       + (f" | {row['error']}" if row["error"] else ""), flush=True)
     return {"meta": {"git_revision": git_revision(), "version": __version__, "mode": args.mode,
                      "model": args.model if args.mode == "llm" else "none (deterministic fixture)",
+                     "coordination": args.coordination if args.mode == "llm" else "pipeline (deterministic rules)",
                      "repeat": args.repeat, "python": platform.python_version(),
                      "date": datetime.now(timezone.utc).isoformat(timespec="seconds")},
             "rows": rows}
@@ -137,7 +138,8 @@ def markdown(results: dict) -> str:
     total_runs = sum(entry["runs"] for entry in by_case.values())
     total_passed = sum(entry["passed"] for entry in by_case.values())
     lines = [f"# Evaluation — {meta['git_revision']} ({meta['mode']})", "",
-             f"Model: {meta['model']} · repetitions: {meta['repeat']} · Python {meta['python']} · {meta['date']}", "",
+             f"Model: {meta['model']} · coordination: {coordination_of(meta)} · "
+             f"repetitions: {meta['repeat']} · Python {meta['python']} · {meta['date']}", "",
              f"**{total_passed}/{total_runs} runs passed every check.**", "",
              "| Case | Passed | Statuses | Model requests | Tokens | Failed checks (first run that failed) |",
              "|---|---|---|---|---|---|"]
@@ -149,13 +151,22 @@ def markdown(results: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def coordination_of(meta: dict) -> str:
+    """Results recorded before the option existed: fixture runs used the rule pipeline, LLM runs the orchestrator."""
+    return meta.get("coordination") or ("pipeline (deterministic rules)" if meta["mode"] == "fixture" else "orchestrator")
+
+
+def described(meta: dict) -> str:
+    return f"{meta['mode']}, {meta['model']}, {coordination_of(meta)}, x{meta['repeat']}"
+
+
 def compare(baseline_dir: Path, candidate_dir: Path) -> str:
     baseline = json.loads((baseline_dir / "results.json").read_text(encoding="utf-8"))
     candidate = json.loads((candidate_dir / "results.json").read_text(encoding="utf-8"))
     before, after = summarize(baseline), summarize(candidate)
     lines = [f"# Comparison: {baseline['meta']['git_revision']} → {candidate['meta']['git_revision']}", "",
-             f"Baseline: {baseline_dir} ({baseline['meta']['mode']}, {baseline['meta']['model']})  ",
-             f"Candidate: {candidate_dir} ({candidate['meta']['mode']}, {candidate['meta']['model']})", "",
+             f"Baseline: {baseline_dir} ({described(baseline['meta'])})  ",
+             f"Candidate: {candidate_dir} ({described(candidate['meta'])})", "",
              "| Case | Baseline | Candidate | Change |", "|---|---|---|---|"]
     counts = {"improved": 0, "regressed": 0, "unchanged": 0}
     for case in sorted(set(before) | set(after)):
@@ -184,6 +195,8 @@ def main() -> int:
     parser.add_argument("--mode", choices=["fixture", "llm"], default="fixture")
     parser.add_argument("--model", default=f"openai:{os.getenv('OPENAI_MODEL', 'gpt-4.1-mini')}")
     parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument("--coordination", choices=["orchestrator", "pipeline"], default="orchestrator",
+                        help="llm mode: an orchestrator agent decides, or a fixed pipeline in code")
     parser.add_argument("--cases", nargs="*", help="Glob patterns of case ids, e.g. 's03-*'")
     parser.add_argument("--compare", nargs=2, type=Path, metavar=("BASELINE", "CANDIDATE"))
     args = parser.parse_args()
