@@ -108,3 +108,36 @@ def test_changed_tool_description_is_refused_and_run_stops(tmp_path):
     assert report["status"] == "insufficient_information"
     assert any("tickets.search_issues" in item for item in state(tmp_path)["catalog"]["refused"])
     assert effects(tmp_path) == []
+
+
+def test_a_person_approves_or_denies_at_the_terminal(tmp_path):
+    asked = []
+
+    def person(answer):
+        def decide(request):
+            asked.append(request)
+            return answer
+        return decide
+
+    report = execute(tmp_path / "yes", "s03-alert-and-ticket", approver=person(True))
+    request = asked[0]
+    assert report["status"] == "recovered" and len(effects(tmp_path / "yes")) == 1
+    assert (request["action"], request["target"], request["approver_role"]) == ("restart_instance", "order-gateway-2", "on-call")
+    assert request["evidence"] and request["reviewer"]["safe_to_attempt"]
+    saved = state(tmp_path / "yes")
+    assert saved["approval"]["answered_by"] == "person at the terminal" and saved["approver"] == "person at the terminal"
+
+    report = execute(tmp_path / "no", "s03-alert-and-ticket", approver=person(False))
+    assert report["status"] == "refused" and effects(tmp_path / "no") == []
+    assert state(tmp_path / "no")["approvals"][0]["status"] == "denied"
+
+
+def test_terminal_prompt_only_approves_an_explicit_yes(monkeypatch, capsys):
+    from incident_response.__main__ import terminal_approver
+
+    request = {"time": "10:40", "approver_role": "on-call", "action": "restart_instance", "target": "order-gateway-2",
+               "reason": "r", "cause": "c", "reviewer": None, "evidence": ["T04 (investigator) read_metrics {}"]}
+    for typed, expected in [("yes", True), ("YES ", True), ("y", False), ("", False)]:
+        monkeypatch.setattr("builtins.input", lambda _prompt, typed=typed: typed)
+        assert terminal_approver(request) is expected
+    assert "order-gateway-2" in capsys.readouterr().err

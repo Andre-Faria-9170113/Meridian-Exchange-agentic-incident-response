@@ -60,7 +60,41 @@ def coordinator_for(crew: Crew, mode: str, coordination: str, model: Any):
     return Orchestrator(crew, specialists, model) if coordination == "orchestrator" else Pipeline(crew, specialists)
 
 
-async def act(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, plan: Plan, pause_after: str | None) -> Outcome:
+Approver = Callable[[dict], bool]  # a person deciding: gets the request, answers yes or no
+
+
+def approval_request(gateway: Gateway, deps: IncidentDeps, plan: Plan, role: str) -> dict:
+    """What a person needs to decide: the exact action, why, and the evidence behind it."""
+    finding, review = plan.finding, plan.review
+    refs = finding.evidence + (review.evidence if review else [])
+    events = {event["ref"]: event for event in gateway.checkpoint.data["events"]}
+    evidence = [f"{ref} ({events[ref]['caller']}) {events[ref]['tool']} {events[ref]['args']}"
+                for ref in dict.fromkeys(refs) if ref in events]
+    sim = deps.tools.sim
+    return {"action": finding.proposal.action, "target": finding.proposal.target, "reason": finding.proposal.reason,
+            "cause": finding.cause, "approver_role": role, "evidence": evidence,
+            "reviewer": review.model_dump() if review else None, "time": sim.clock.label(sim.state.tick)}
+
+
+async def ask_person(gateway: Gateway, deps: IncidentDeps, plan: Plan, role: str, approver: Approver) -> dict:
+    """A person answers instead of the scenario's simulated approver. The request still goes through the systems'
+    approval service, so the approval has a reference, is bound to this action and target, and is audited there."""
+    proposal = plan.finding.proposal
+    approved = approver(approval_request(gateway, deps, plan, role))
+    sim, simulated = deps.tools.sim, deps.tools.sim.scenario.approver
+    sim.scenario.approver = {"mode": "approve_all" if approved else "deny_all"}
+    try:
+        approval = require(await gateway.call("request_approval", action=proposal.action, target=proposal.target,
+                                              reason=f"{proposal.reason} ({plan.finding.cause})"[:300],
+                                              approver_role=role))
+    finally:
+        sim.scenario.approver = simulated
+        deps.tools.persist()  # the saved world keeps the scenario's approver, not this one answer
+    return {**approval, "answered_by": "person at the terminal"}
+
+
+async def act(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, plan: Plan, pause_after: str | None,
+              approver: Approver | None = None) -> Outcome:
     """Authorize, act once, confirm the effect, verify recovery. Refusals end the attempt with zero effects."""
     finding, proposal = plan.finding, plan.finding.proposal
     denied = authority_refusal(deps, proposal)
@@ -72,9 +106,12 @@ async def act(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, plan: Pla
         denied = await evidence_refusal(gateway, deps, finding)
         if denied:
             raise PolicyRefusal(denied)
-        approval = require(await gateway.call("request_approval", action=proposal.action, target=proposal.target,
-                                              reason=f"{proposal.reason} ({finding.cause})"[:300],
-                                              approver_role=approver_role(deps, proposal)))
+        role = approver_role(deps, proposal)
+        if approver is None:  # the scenario's simulated approver answers
+            approval = require(await gateway.call("request_approval", action=proposal.action, target=proposal.target,
+                                                  reason=f"{proposal.reason} ({finding.cause})"[:300], approver_role=role))
+        else:
+            approval = await ask_person(gateway, deps, plan, role, approver)
         state.set(approval=approval)
         denied = approval_refusal(deps, proposal, approval["approval_ref"])
         if denied:
@@ -139,8 +176,9 @@ async def update_tickets(gateway: Gateway, state: Checkpoint, plan: Plan, report
 async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", model: Any = None,
               coordination: str = "orchestrator", resume: bool = False, role: str | None = None,
               pause_after: str | None = None, memory_path: Path | None = None,
-              observe: Callable[[Any], None] | None = None) -> dict:
-    """Run (or resume) one incident. `observe(tools)` lets the evaluator see the simulated systems."""
+              observe: Callable[[Any], None] | None = None, approver: Approver | None = None) -> dict:
+    """Run (or resume) one incident. `observe(tools)` lets the evaluator see the simulated systems.
+    `approver`: a person who answers approval requests; by default the scenario's simulated approver does."""
     state = Checkpoint(directory)
     world_path = directory / "world.pkl"
     if resume:
@@ -169,7 +207,7 @@ async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", 
     identity = identity_for(role or state.data.get("role")
                             or load_scenario(directory / "scenario.yaml").actor.get("role", "first-line"))
     tools = load_world(world_path, identity["name"]) if resume else create_world(directory / "scenario.yaml", world_path, identity["name"])
-    state.set(role=identity["role"])
+    state.set(role=identity["role"], approver="person at the terminal" if approver else "scenario (simulated)")
     if observe:
         observe(tools)
     deps = IncidentDeps(tools, MemoryStore(state.data["memory_path"]), identity)
@@ -194,7 +232,7 @@ async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", 
                 if state.data["phase"] == "acted":
                     outcome = await check_recovery(gateway, deps, plan, state.data["action"])
                 elif plan.decision.decision == "act":
-                    outcome = await act(gateway, deps, state, plan, pause_after)
+                    outcome = await act(gateway, deps, state, plan, pause_after, approver)
                 elif plan.decision.decision == "no_action_needed":
                     healthy, refs, detail = await verify(gateway, deps, plan.finding.component, None)
                     outcome = (Outcome("resolved", f"No action needed: {detail}.", [], refs) if healthy else
