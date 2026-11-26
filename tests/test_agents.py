@@ -10,7 +10,7 @@ from pathlib import Path
 from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import FunctionModel
 
-from incident_response.agents import READ_BUDGET, SPECIALIST_REQUESTS
+from incident_response.agents import READ_BUDGET
 from incident_response.workflow import run
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,7 +64,7 @@ class Script:
         if "You are the dependency and safety reviewer" in instructions:
             if self.reviewer_fails:
                 raise RuntimeError("reviewer model unavailable")
-            if self.reviewer_loops:  # what gpt-4.1-mini did on its first real run: guess runbook names until stopped
+            if self.reviewer_loops and info.function_tools:  # what gpt-4.1-mini did: guess runbook names until stopped
                 return call("read_runbook", {"name": f"memory pressure {len(done)}"})
             if not done:
                 return call("check_link", {"source": "order-gateway", "target": "reference-db"})
@@ -114,14 +114,12 @@ def test_failure_between_specialists_is_detected_and_nothing_happens(tmp_path):
 
 def test_specialist_going_round_in_circles_is_capped_and_kept_in_the_trace(tmp_path):
     report, state, effects = execute(tmp_path, Script(reviewer_loops=True))
-    assert report["status"] == "escalated" and effects == []
-    assert "UsageLimitExceeded" in state["specialist_failures"][0]
+    assert report["status"] == "escalated" and effects == []  # its answer cites no evidence it read: rejected
+    assert state["specialist_failures"] and "reviewer" in state["specialist_failures"][0]
     guesses = [e for e in state["events"] if e["caller"] == "reviewer" and e["tool"] == "read_runbook"]
-    assert len(guesses) == READ_BUDGET["reviewer"]  # later guesses were refused in code without reading (no time passes)
-    assert len(state["limited_calls"]) == SPECIALIST_REQUESTS - READ_BUDGET["reviewer"]
-    assert {c["reason"] for c in state["limited_calls"]} == {"budget"}
+    assert len(guesses) == READ_BUDGET["reviewer"]  # then the tools were withdrawn: no more reads, no more time
     seen = json.dumps(state["model_messages"]["reviewer"])  # the failed reviewer's conversation is in the trace
-    assert "Do not guess runbook names" in seen and "Read budget used" in seen
+    assert "Do not guess runbook names" in seen and "That was your last read" in seen
     assert state["usage"]["requests"] < 40  # the team still had budget left
 
 

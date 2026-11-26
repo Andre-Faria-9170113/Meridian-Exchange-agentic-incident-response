@@ -18,6 +18,7 @@ from typing import Any
 from pydantic_ai import Agent, ModelRetry, RunContext, Tool, capture_run_messages
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import ModelMessagesTypeAdapter
+from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from meridian.agent_runtime import IncidentDeps
@@ -90,8 +91,8 @@ REVIEWER = COMMON + """
 You are the dependency and safety reviewer. Independently check the exact proposal you are given, before anyone acts.
 - Check the links from the affected component to its dependencies, and for order-gateway the reference-db metrics.
 - Check whether the trading session is open.
-- The investigator already read the affected component and the runbook (its evidence refs are in the proposal), and
-  code re-reads fresh metrics right before acting. Do not re-read them; for a rollback, check the change is still active.
+- The investigator already read the affected component and the runbook (given to you when it cited one), and code
+  re-reads fresh metrics right before acting. Do not re-read them; for a rollback, check the change is still active.
 - safe_to_attempt=true only when there is an action and current evidence supports it: a restart does not help when a
   dependency link is down or reference-db is unhealthy; a rollback needs the change to still be active.
 - constraints: every condition whoever acts must respect (one exact target, approvals, critical components, verification).
@@ -131,7 +132,7 @@ class Seat:
         reason = message = None
         if signature in self.seen:
             reason, message = "repeated", f"Repeated call: you already have this result as {self.seen[signature]}. Use it."
-        elif len(self.seen) >= READ_BUDGET[self.caller]:
+        elif self.spent:  # only reachable with several calls in one response: tools are withdrawn once spent
             reason, message = "budget", (f"Read budget used ({READ_BUDGET[self.caller]} reads for one answer). Answer "
                                          "now with the evidence you have; if it is not enough, say what is missing.")
         if reason:  # nothing is read, so no time passes; kept for the monitors and the trace
@@ -140,7 +141,13 @@ class Seat:
             return {"error": message}
         result = await self.gateway.call(tool, caller=self.caller, **args)
         self.seen[signature] = result.get("ref", "?")
+        if self.spent:
+            result["note"] = "That was your last read for this answer: give your answer now from the evidence you have."
         return result
+
+    @property
+    def spent(self) -> bool:
+        return len(self.seen) >= READ_BUDGET[self.caller]
 
 
 async def read_metrics(ctx: RunContext[Seat], component: str, window_ticks: int = 5, per_instance: bool = True) -> dict:
@@ -221,8 +228,12 @@ def ticket_keys_seen(gateway: Gateway) -> set[str]:
 
 
 def specialist(model: Any, caller: str, output_type: type, instructions: str, gateway: Gateway) -> Agent:
+    # Once the read budget is spent the tools are withdrawn, so the only move left is to answer. Refusing calls was not
+    # enough: gpt-4.1-mini kept calling refused tools until its request cap and gave no answer at all.
+    toolset = FunctionToolset(NATIVE.get(caller, []) + mcp_tools(gateway, caller)).filtered(
+        lambda ctx, _tool: not ctx.deps.spent)
     agent = Agent(model, deps_type=Seat, output_type=output_type, instructions=instructions, retries=2,
-                  tools=NATIVE.get(caller, []) + mcp_tools(gateway, caller))
+                  toolsets=[toolset])
 
     @agent.output_validator
     def cited(ctx: RunContext[Seat], output):
@@ -306,7 +317,15 @@ class LLMSpecialists:
         return await self._ask("investigator", "\n\n".join(parts))
 
     async def review(self, finding: Finding, question: str = "") -> Review:
-        return await self._ask("reviewer", f"{self._incident()}\n\nProposal to review (exact): {finding.model_dump_json()}\n\n{question}".strip())
+        parts = [self._incident(), f"Proposal to review (exact): {finding.model_dump_json()}"]
+        for ref in finding.evidence:  # selected context: the runbook the investigator cited, so it is not hunted for
+            result = self.crew.gateway.result(ref) or {}
+            if "text" in result and "name" in result:
+                parts.append(f"Runbook the investigator cited ({ref}, {result['name']} v{result.get('version')}):\n"
+                             f"{result['text']}")
+        if question:
+            parts.append(question)
+        return await self._ask("reviewer", "\n\n".join(parts))
 
 
 # Coordinators -----------------------------------------------------------------------------------------------------
