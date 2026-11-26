@@ -95,12 +95,31 @@ Architecture: see the README.
 Caveats to keep stating honestly:
 - The fixture rules were written knowing the public cases. A 22/22 fixture score is plumbing evidence, not an LLM
   result.
-- The LLM mode is tested only with a scripted `FunctionModel`. It has **never run against a real model**.
+- Real-model results so far are single runs (`--repeat 1`) on the s03 cases only. No s01, s02, s04 LLM runs yet.
+
+## First real-model check (26 November 2026, gpt-4.1-mini)
+
+Done. The results are in ignored `runs/` folders; the milestone 2 evidence will rerun them at a tagged revision.
+- s03 suite: 2/5 at `07b7c86`, then 5/5 at `520e3be`, with 17–20 requests and 27–31k tokens per case.
+- **Lesson: every tool call costs one simulated minute.** In s03, `order-gateway-2` crashes out of memory around tick
+  42, so the team has about 22 reads. The model made 24–43 reads, repeating work and guessing runbook names, and
+  prompts did not fix it.
+- What fixed it, in code (`agents.py`):
+  - a read budget per specialist answer (`READ_BUDGET`: triage 3, investigator 6, reviewer 5);
+  - identical repeated calls refused;
+  - tools withdrawn once the budget is spent, so the model must answer;
+  - the reviewer receives the runbook the investigator cited;
+  - a request cap per specialist (12);
+  - failed runs kept in `model_messages`.
+- Every case now uses exactly 14 reads before acting, so the budget is the binding constraint. Keep it in mind when
+  the correction loop adds reads.
+- Gap: triage leaves `related` empty. MEM-1187 is linked from MRX-2210, but it is no longer reported. The checks pass
+  without it.
 
 ## Plan (in order)
 
 0. **The user pushes** `main` and the tags to GitHub. Claude cannot push from here: no credentials.
-1. **First real-model check.** It needs the user's OK, because it spends API credit. Run `--mode llm` on
+1. **(Done, see above.) First real-model check.** It needs the user's OK, because it spends API credit. Run `--mode llm` on
    `s03-alert-and-ticket`, then `scripts/evaluate.py --mode llm --cases 's03-*'`. Read the traces in `checkpoint.json`
    (`model_messages`, `events`). Fix prompt and validator problems before the full suite. Watch the token budget:
    s02 checks allow at most 40,000 input tokens.
