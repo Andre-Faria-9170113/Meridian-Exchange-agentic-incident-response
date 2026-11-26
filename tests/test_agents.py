@@ -183,6 +183,9 @@ def test_errors_finding_must_have_searched_the_logs_for_the_change():
                    "result": {"changes": [{"change_id": "CHG-1", "active": True}, {"change_id": "CHG-0", "active": True}]}})
     events.append({"ref": "T03", "caller": "investigator", "tool": "read_logs", "args": {"level": "ERROR"}, "result": {}})
     assert "contains='CHG-1'" in unsearched_change(seat, finding)  # searching by level is not searching for the change
+    events.append({"ref": "T05", "caller": "investigator", "tool": "read_logs", "args": {"contains": "CHG-1", "level": "ERROR"},
+                   "result": {}})
+    assert "contains='CHG-1'" in unsearched_change(seat, finding)  # nor is a search for it that hides WARN lines
     events.append({"ref": "T04", "caller": "investigator", "tool": "read_logs", "args": {"contains": "CHG-1"}, "result": {}})
     assert unsearched_change(seat, finding) is None
     named = finding.model_copy(update={"cause_kind": "change", "change_id": "CHG-0"})

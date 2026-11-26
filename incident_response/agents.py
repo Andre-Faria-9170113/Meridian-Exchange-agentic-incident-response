@@ -272,7 +272,8 @@ def unsearched_change(seat: Seat, finding: Finding) -> str | None:
     active = [change["change_id"] for change in listed[-1] if change.get("active")]
     target = finding.change_id or (finding.proposal.target if finding.proposal.action == "rollback_change" else None)
     target = target or (active[0] if active else None)
-    searched = {event["args"].get("contains") for event in mine if event["tool"] == "read_logs"}
+    # a level filter hides the line: the one naming CHG-4490 is a WARN, and an ERROR-only search missed it
+    searched = {event["args"].get("contains") for event in mine if event["tool"] == "read_logs" and not event["args"].get("level")}
     if target and target not in searched:
         return (f"Before concluding, search the logs for {target} (read_logs with contains='{target}' and no level "
                 "filter): a log line naming the change is the evidence a rollback needs.")
