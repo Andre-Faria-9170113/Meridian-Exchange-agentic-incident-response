@@ -163,7 +163,8 @@ Caveats to keep stating honestly:
 ## Commands
 
 ```bash
-python3.10 -m venv .venv && . .venv/bin/activate && pip install -r requirements.lock
+uv sync --frozen --python 3.10 && . .venv/bin/activate   # uv.lock is the source of truth
+uv lock && uv export --frozen --format requirements-txt -o requirements.lock   # after changing pyproject.toml
 python -m pytest -q
 python scripts/evaluate.py --output runs/eval-x [--mode llm --repeat 3] [--cases 's03-*']
 python scripts/evaluate.py --compare evidence/v0-starter runs/eval-x

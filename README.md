@@ -13,11 +13,14 @@ against the runbook criterion and records the outcome on the incident ticket and
 
 ## Quick start
 
-Python 3.10 on Linux is the environment `requirements.lock` was produced and tested in.
+Dependencies are declared in `pyproject.toml` and locked in `uv.lock`, the single source of truth. Tested on Python
+3.10 on Linux.
 
 ```bash
-python3.10 -m venv .venv && source .venv/bin/activate
-python -m pip install -r requirements.lock          # or: uv venv && uv pip install -r requirements.lock
+uv sync --frozen --python 3.10 && source .venv/bin/activate
+
+# Without uv: requirements.lock is exported from uv.lock (same versions, with hashes)
+#   python3.10 -m venv .venv && source .venv/bin/activate && pip install -r requirements.lock
 
 # Offline: deterministic specialists, real simulator, real in-process MCP, no model calls.
 python -m incident_response run --scenario cases/s03-alert-and-ticket.yaml --run-dir runs/demo
