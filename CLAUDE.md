@@ -6,7 +6,7 @@ This file is the plan and context for continuing this project in a new workspace
 
 - Course 2 final project, *Agentic AI: Da Arquitetura à Implementação* (trainer: Luís Noronha). Common proposal:
   incident response for the fictional **Meridian Exchange**.
-- **Deadline: 30 November 2026, 23:59.**
+- **Deadline: 1 December 2026, until midnight (end of the day).** Extended from 30 November.
 - Repository: https://github.com/Andre-Faria-9170113/Meridian-Exchange-agentic-incident-response. The evaluator
   confirmed a public repository is fine.
 - The brief (`Projeto Agentic AI.pdf`) and the slides for sessions 1–9 stayed in the original course workspace. Their
