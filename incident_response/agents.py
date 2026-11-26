@@ -15,7 +15,9 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic_ai import Agent, ModelRetry, RunContext, Tool
+from pydantic_ai import Agent, ModelRetry, RunContext, Tool, capture_run_messages
+from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.messages import ModelMessagesTypeAdapter
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from meridian.agent_runtime import IncidentDeps
@@ -24,7 +26,21 @@ from .contracts import Correlation, Decision, Finding, Plan, Review
 from .gateway import Gateway
 from .rules import RuleSpecialists, decide
 
-LIMITS = UsageLimits(request_limit=40, total_tokens_limit=150_000)
+LIMITS = UsageLimits(request_limit=40, total_tokens_limit=150_000)  # the whole team, for one run
+SPECIALIST_REQUESTS = 12  # one specialist answer: a specialist going round in circles cannot starve the others
+
+
+def specialist_limits(team: RunUsage) -> UsageLimits:
+    """One specialist answer's limits: its own cap, within what is left of the team budget."""
+    requests_left = LIMITS.request_limit - team.requests
+    tokens_left = LIMITS.total_tokens_limit - team.total_tokens
+    if requests_left <= 0 or tokens_left <= 0:
+        raise UsageLimitExceeded(f"Team budget used: {team.requests} requests, {team.total_tokens} tokens")
+    return UsageLimits(request_limit=min(SPECIALIST_REQUESTS, requests_left), total_tokens_limit=tokens_left)
+
+
+def as_json(messages: list) -> list:
+    return json.loads(ModelMessagesTypeAdapter.dump_json(messages))
 
 
 class SpecialistFailure(RuntimeError):
@@ -122,8 +138,11 @@ async def list_runbooks(ctx: RunContext[Seat]) -> dict:
 
 
 async def read_runbook(ctx: RunContext[Seat], name: str, version: int | None = None) -> dict:
-    """Read a runbook by name; the latest version unless `version` is given."""
-    return await ctx.deps.call("read_runbook", name=name, version=version)
+    """Read a runbook by its exact name from list_runbooks; the latest version unless `version` is given."""
+    result = await ctx.deps.call("read_runbook", name=name, version=version)
+    if "error" in result:  # a model guessing names goes round in circles: point it to the list instead
+        result["hint"] = "Do not guess runbook names: call list_runbooks and use an exact name and version from it."
+    return result
 
 
 async def check_link(ctx: RunContext[Seat], source: str, target: str) -> dict:
@@ -142,7 +161,7 @@ async def recall_memory(ctx: RunContext[Seat], subject: str) -> dict:
 
 
 NATIVE = {"investigator": [read_metrics, read_logs, recent_changes, list_runbooks, read_runbook, recall_memory],
-          "reviewer": [read_metrics, check_link, recent_changes, exchange_status, read_runbook]}
+          "reviewer": [read_metrics, check_link, recent_changes, exchange_status, list_runbooks, read_runbook]}
 MCP = {"triage": ["monitoring.list_alerts", "tickets.search_issues", "tickets.get_issue"]}
 
 
@@ -230,9 +249,15 @@ class LLMSpecialists:
                        "reviewer": specialist(model, "reviewer", Review, REVIEWER, crew.gateway)}
 
     async def _ask(self, caller: str, prompt: str):
-        result = await self.agents[caller].run(prompt, deps=Seat(self.crew.gateway, caller), usage=self.crew.usage,
-                                               usage_limits=LIMITS)
-        self.crew.messages.setdefault(caller, []).append(json.loads(result.all_messages_json()))
+        usage, trace = RunUsage(), self.crew.messages.setdefault(caller, [])
+        limits = specialist_limits(self.crew.usage)
+        with capture_run_messages() as messages:  # kept on failure too: a failed specialist must stay in the trace
+            try:
+                result = await self.agents[caller].run(prompt, deps=Seat(self.crew.gateway, caller), usage=usage,
+                                                       usage_limits=limits)
+            finally:
+                self.crew.usage.incr(usage)
+                trace.append(as_json(messages))
         return result.output
 
     def _incident(self) -> str:
@@ -350,10 +375,13 @@ class Orchestrator:
             return decision
 
     async def _run(self, prompt: str) -> Plan:
-        result = await self.agent.run(prompt, deps=Orchestration(self.crew, self.specialists), message_history=self.history,
-                                      usage=self.crew.usage, usage_limits=LIMITS)
+        with capture_run_messages() as messages:
+            try:
+                result = await self.agent.run(prompt, deps=Orchestration(self.crew, self.specialists),
+                                              message_history=self.history, usage=self.crew.usage, usage_limits=LIMITS)
+            finally:
+                self.crew.messages["orchestrator"] = as_json(messages)
         self.history = result.all_messages()
-        self.crew.messages["orchestrator"] = json.loads(result.all_messages_json())
         if self.crew.correlation is None or self.crew.finding is None:
             raise SpecialistFailure("; ".join(self.crew.failures) or "the orchestrator decided without specialist results")
         return self.crew.plan(result.output)

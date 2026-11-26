@@ -39,7 +39,7 @@ HARNESS_MCP = {"tickets.add_comment", "tickets.link_issues", "tickets.create_iss
 CALLER_TOOLS: dict[str, set[str]] = {
     "triage": {"monitoring.list_alerts", "tickets.search_issues", "tickets.get_issue"},
     "investigator": {"read_metrics", "read_logs", "recent_changes", "list_runbooks", "read_runbook", "memory.recall"},
-    "reviewer": {"read_metrics", "check_link", "recent_changes", "exchange_status", "read_runbook"},
+    "reviewer": {"read_metrics", "check_link", "recent_changes", "exchange_status", "list_runbooks", "read_runbook"},
     "harness": READS | MUTATIONS | {"action_status", "monitoring.list_alerts", "tickets.search_issues",
                                     "tickets.get_issue"} | HARNESS_MCP,
 }

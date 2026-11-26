@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import FunctionModel
 
+from incident_response.agents import SPECIALIST_REQUESTS
 from incident_response.workflow import run
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,8 +34,9 @@ def answer(info, data):
 
 
 class Script:
-    def __init__(self, fake_ref_once=False, reviewer_fails=False, act_without_review=False):
+    def __init__(self, fake_ref_once=False, reviewer_fails=False, act_without_review=False, reviewer_loops=False):
         self.fake_ref_once, self.reviewer_fails, self.act_without_review = fake_ref_once, reviewer_fails, act_without_review
+        self.reviewer_loops = reviewer_loops
 
     async def __call__(self, messages, info):
         instructions, done = info.instructions or "", returns(messages)
@@ -61,6 +63,8 @@ class Script:
         if "You are the dependency and safety reviewer" in instructions:
             if self.reviewer_fails:
                 raise RuntimeError("reviewer model unavailable")
+            if self.reviewer_loops:  # what gpt-4.1-mini did on its first real run: guess runbook names until stopped
+                return call("read_runbook", {"name": f"memory pressure {len(done)}"})
             if not done:
                 return call("check_link", {"source": "order-gateway", "target": "reference-db"})
             return answer(info, {"safe_to_attempt": True, "constraints": ["one instance"], "evidence": refs})
@@ -105,6 +109,17 @@ def test_failure_between_specialists_is_detected_and_nothing_happens(tmp_path):
     report, state, effects = execute(tmp_path, Script(reviewer_fails=True))
     assert report["status"] == "escalated" and effects == []
     assert state["specialist_failures"] and "reviewer" in state["specialist_failures"][0]
+
+
+def test_specialist_going_round_in_circles_is_capped_and_kept_in_the_trace(tmp_path):
+    report, state, effects = execute(tmp_path, Script(reviewer_loops=True))
+    assert report["status"] == "escalated" and effects == []
+    assert "UsageLimitExceeded" in state["specialist_failures"][0]
+    guesses = [e for e in state["events"] if e["caller"] == "reviewer" and e["tool"] == "read_runbook"]
+    assert len(guesses) == SPECIALIST_REQUESTS
+    seen = json.dumps(state["model_messages"]["reviewer"])  # the failed reviewer's conversation is in the trace
+    assert "Do not guess runbook names" in seen
+    assert state["usage"]["requests"] < 40  # the team still had budget left
 
 
 def test_orchestrator_cannot_act_without_a_review(tmp_path):
