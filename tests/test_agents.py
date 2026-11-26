@@ -10,7 +10,7 @@ from pathlib import Path
 from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import FunctionModel
 
-from incident_response.agents import SPECIALIST_REQUESTS
+from incident_response.agents import READ_BUDGET, SPECIALIST_REQUESTS
 from incident_response.workflow import run
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,9 +34,10 @@ def answer(info, data):
 
 
 class Script:
-    def __init__(self, fake_ref_once=False, reviewer_fails=False, act_without_review=False, reviewer_loops=False):
+    def __init__(self, fake_ref_once=False, reviewer_fails=False, act_without_review=False, reviewer_loops=False,
+                 triage_repeats=False):
         self.fake_ref_once, self.reviewer_fails, self.act_without_review = fake_ref_once, reviewer_fails, act_without_review
-        self.reviewer_loops = reviewer_loops
+        self.reviewer_loops, self.triage_repeats = reviewer_loops, triage_repeats
 
     async def __call__(self, messages, info):
         instructions, done = info.instructions or "", returns(messages)
@@ -44,7 +45,7 @@ class Script:
         if "You are the triage specialist" in instructions:
             if not done:
                 return call("monitoring_list_alerts", {"device": "order-gateway", "size": 20})
-            if len(done) == 1:
+            if len(done) == 1 or (self.triage_repeats and len(done) == 2):
                 return call("tickets_search_issues", {"max_results": 10})
             issues = done[1][1]["issues"]
             incident = next(i["key"] for i in issues if i["project"] == "MRX" and i.get("component") == "order-gateway")
@@ -116,10 +117,20 @@ def test_specialist_going_round_in_circles_is_capped_and_kept_in_the_trace(tmp_p
     assert report["status"] == "escalated" and effects == []
     assert "UsageLimitExceeded" in state["specialist_failures"][0]
     guesses = [e for e in state["events"] if e["caller"] == "reviewer" and e["tool"] == "read_runbook"]
-    assert len(guesses) == SPECIALIST_REQUESTS
+    assert len(guesses) == READ_BUDGET["reviewer"]  # later guesses were refused in code without reading (no time passes)
+    assert len(state["limited_calls"]) == SPECIALIST_REQUESTS - READ_BUDGET["reviewer"]
+    assert {c["reason"] for c in state["limited_calls"]} == {"budget"}
     seen = json.dumps(state["model_messages"]["reviewer"])  # the failed reviewer's conversation is in the trace
-    assert "Do not guess runbook names" in seen
+    assert "Do not guess runbook names" in seen and "Read budget used" in seen
     assert state["usage"]["requests"] < 40  # the team still had budget left
+
+
+def test_repeated_read_is_refused_without_touching_the_systems(tmp_path):
+    report, state, effects = execute(tmp_path, Script(triage_repeats=True))
+    assert report["status"] == "recovered" and len(effects) == 1
+    searches = [e for e in state["events"] if e["caller"] == "triage" and e["tool"] == "tickets.search_issues"]
+    assert len(searches) == 1 and [c["reason"] for c in state["limited_calls"]] == ["repeated"]
+    assert f"you already have this result as {searches[0]['ref']}" in json.dumps(state["model_messages"]["triage"])
 
 
 def test_orchestrator_cannot_act_without_a_review(tmp_path):

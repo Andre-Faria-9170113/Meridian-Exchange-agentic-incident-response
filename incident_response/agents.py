@@ -112,13 +112,35 @@ If an answer is unclear or contradicts another specialist, ask one follow-up que
 # Specialist tools: every one goes through the gateway as its caller --------------------------------------------
 
 
+# Reads one specialist answer may make. Every read costs exchange time while the incident gets worse, and prompts
+# alone did not stop gpt-4.1-mini from making 24-31 reads where the procedure needs about 10 (evidence/ notes).
+READ_BUDGET = {"triage": 3, "investigator": 6, "reviewer": 5}
+
+
 @dataclass
 class Seat:
+    """One specialist answer's access to the gateway, with its read budget and repeat check (enforced in code)."""
+
     gateway: Gateway
     caller: str
+    seen: dict[str, str] = field(default_factory=dict)  # call signature -> ref of the earlier result
 
     async def call(self, tool: str, /, **args: Any) -> dict:
-        return await self.gateway.call(tool, caller=self.caller, **{k: v for k, v in args.items() if v is not None})
+        args = {k: v for k, v in args.items() if v is not None}
+        signature = json.dumps([tool, args], sort_keys=True, default=str)
+        reason = message = None
+        if signature in self.seen:
+            reason, message = "repeated", f"Repeated call: you already have this result as {self.seen[signature]}. Use it."
+        elif len(self.seen) >= READ_BUDGET[self.caller]:
+            reason, message = "budget", (f"Read budget used ({READ_BUDGET[self.caller]} reads for one answer). Answer "
+                                         "now with the evidence you have; if it is not enough, say what is missing.")
+        if reason:  # nothing is read, so no time passes; kept for the monitors and the trace
+            self.gateway.checkpoint.data.setdefault("limited_calls", []).append(
+                {"caller": self.caller, "tool": tool, "args": args, "reason": reason})
+            return {"error": message}
+        result = await self.gateway.call(tool, caller=self.caller, **args)
+        self.seen[signature] = result.get("ref", "?")
+        return result
 
 
 async def read_metrics(ctx: RunContext[Seat], component: str, window_ticks: int = 5, per_instance: bool = True) -> dict:
@@ -146,7 +168,7 @@ async def list_runbooks(ctx: RunContext[Seat]) -> dict:
 async def read_runbook(ctx: RunContext[Seat], name: str, version: int | None = None) -> dict:
     """Read a runbook by its exact name from list_runbooks; the latest version unless `version` is given."""
     result = await ctx.deps.call("read_runbook", name=name, version=version)
-    if "error" in result:  # a model guessing names goes round in circles: point it to the list instead
+    if str(result.get("error", "")).startswith("Unknown runbook"):  # guessing names goes round in circles
         result["hint"] = "Do not guess runbook names: call list_runbooks and use an exact name and version from it."
     return result
 
@@ -179,11 +201,11 @@ def mcp_tools(gateway: Gateway, caller: str) -> list[Tool]:
         if definition is None:
             continue
 
-        async def invoke(_qualified: str = qualified, **kwargs: Any) -> dict:
-            return await gateway.call(_qualified, caller=caller, **kwargs)
+        async def invoke(ctx: RunContext[Seat], _qualified: str = qualified, **kwargs: Any) -> dict:
+            return await ctx.deps.call(_qualified, **kwargs)
 
         tools.append(Tool.from_schema(invoke, name=qualified.replace(".", "_"), description=definition.description,
-                                      json_schema=definition.input_schema))
+                                      json_schema=definition.input_schema, takes_ctx=True))
     return tools
 
 
