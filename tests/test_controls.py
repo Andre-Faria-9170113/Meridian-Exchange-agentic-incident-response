@@ -6,7 +6,7 @@ import pytest
 
 from incident_response.contracts import Proposal
 from incident_response.gateway import Gateway, redact
-from incident_response.memory import correct, forget, recall, remember
+from incident_response.memory import correct, forget, recall, remember, store_clock
 from incident_response.policy import approval_refusal, authority_refusal
 from incident_response.state import Checkpoint
 from meridian.agent_runtime import IncidentDeps, identity_for
@@ -67,14 +67,45 @@ def test_memory_policy(tmp_path):
     assert "matching-engine" not in record.content and record.source_ref == "run:abc123"
     deps.sim.advance(5)
     assert [hint["memory_id"] for hint in recall(deps, "order-gateway")["hints"]] == [record.memory_id]
-    fixed = correct(deps, record.memory_id, "Restart mitigated it; the leak itself is still open.", "rita.alves")
-    assert deps.memory.get(record.memory_id).status == "superseded"
+    on_call, at = identity_for("on-call"), store_clock(deps.memory)
+    with pytest.raises(PermissionError):  # the agent may not rewrite its own memory
+        correct(deps.memory, record.memory_id, "x", "x", operator=identity_for("first-line"), at=at)
+    fixed = correct(deps.memory, record.memory_id, "Restart mitigated it; the leak itself is still open.",
+                    "ticket MRX-2210", operator=on_call, at=at)
+    assert deps.memory.get(record.memory_id).status == "superseded" and fixed.author == "rita.alves"
+    with pytest.raises(ValueError):  # a superseded record is not corrected twice
+        correct(deps.memory, record.memory_id, "x", "x", operator=on_call, at=at)
     assert [hint["memory_id"] for hint in recall(deps, "order-gateway")["hints"]] == [fixed.memory_id]
     other_team = deps_for("settlement-analyst", tmp_path)
     assert recall(other_team, "order-gateway")["hints"] == []
     with pytest.raises(PermissionError):
-        correct(other_team, fixed.memory_id, "wrong team", "x")
+        correct(deps.memory, fixed.memory_id, "wrong team", "x", operator=identity_for("settlement-analyst"), at=at)
     deps.memory.update(fixed.memory_id, valid_until="2020-01-01 00:00")
     assert recall(deps, "order-gateway")["hints"] == []  # expired records are not recalled
-    assert forget(deps, fixed.memory_id, "operator request")
+    assert forget(deps.memory, fixed.memory_id, "operator request", operator=on_call, at=store_clock(deps.memory))
     assert deps.memory.deletions()[0]["memory_id"] == fixed.memory_id
+
+
+def test_memory_operator_cli(tmp_path):
+    """The operator commands: list by team, correct and forget by a person, never by the agent's identity."""
+    import subprocess
+    import sys
+
+    deps = deps_for("first-line", tmp_path)
+    record = remember(deps, incident_id="INC-1", component="order-gateway", cause_kind="instance_memory",
+                      action={"action": "restart_instance", "target": "order-gateway-2", "action_id": "ACT-001"},
+                      verification="metrics/order-gateway/40", run_id="cli123")
+
+    def cli(*args):
+        return subprocess.run([sys.executable, "-m", "incident_response", "memory", "--memory", str(deps.memory.path), *args],
+                              cwd=ROOT, capture_output=True, text=True)
+
+    assert record.memory_id in cli("list").stdout
+    assert "0 record(s)" in cli("--role", "settlement-analyst", "list").stdout
+    refused = cli("--role", "first-line", "forget", record.memory_id, "--reason", "x")
+    assert refused.returncode == 1 and "Only a person" in refused.stderr
+    assert cli("correct", record.memory_id, "--text", "leak not fixed", "--source", "on-call review").returncode == 0
+    fixed = next(r for r in deps.memory.all() if r.supersedes == record.memory_id)
+    assert fixed.author == "rita.alves" and fixed.created_at > record.created_at  # on the store's clock, not wall time
+    assert cli("forget", fixed.memory_id, "--reason", "vendor fixed it").returncode == 0
+    assert "vendor fixed it" in cli("list", "--all").stdout

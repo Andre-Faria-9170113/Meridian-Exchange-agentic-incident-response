@@ -139,6 +139,15 @@ Done. The results are in ignored `runs/` folders; the milestone 2 evidence will 
      the demo.
    - Show cross-shift memory: on day 2 the investigator recalls day 1, but fresh readings send the restart to
      `order-gateway-1`, not `order-gateway-2`. The evaluator already shares memory for the day-1/day-2 sequence.
+   - Folded in from the first real-model check (user decision, 26 November):
+     - Validator rule: an errors finding must cite a log search by change id, for the change it names or else the
+       most recent active one. This mirrors `guards.evidence_refusal`.
+     - Free a read by exempting `memory.recall` from the budget, only if it does not advance simulated time. Raise
+       the investigator budget to 7 only if measured safe for the memory-crash deadline.
+     - s04-conflicting-shift-notes: memory policy for disagreeing notes (later, user-sourced notes weigh more, and
+       current state decides).
+     - Trim tokens: s02-hidden-config-change uses 41.2k against a 40k limit.
+     - Triage `related` gap.
    - Repeated LLM evaluation (`--repeat 3`), orchestrator versus pipeline on the same cases. Save to
      `evidence/milestone-2/` with `--compare` against the baseline and milestone 1. Record model, version, tokens and
      regressions.
