@@ -113,6 +113,15 @@ Done. The results are in ignored `runs/` folders; the milestone 2 evidence will 
   - failed runs kept in `model_messages`.
 - Every case now uses exactly 14 reads before acting, so the budget is the binding constraint. Keep it in mind when
   the correction loop adds reads.
+- Full suite: 18/22 at `c89af64`, then 19/22 at `4b39f0e`, with 0 regressions.
+  - Fixed at `4b39f0e`: the investigator may read metrics only for the component triage named; a `no_fault` that its
+    latest reading contradicts is rejected; changes are listed for all components; the MCP list clamp is applied
+    when the size is omitted (it was letting 50 alerts through).
+  - Still failing:
+    - s02-firewall-change: logs searched by level, not by change id; the proof is a WARN line naming CHG-4490.
+    - s04-conflicting-shift-notes: names CHG-4310, not CHG-4471, which is still active.
+    - s02-hidden-config-change: finds CHG-4471, but uses 41.2k tokens against a 40k limit.
+  - All three escalate safely without acting.
 - Gap: triage leaves `related` empty. MEM-1187 is linked from MRX-2210, but it is no longer reported. The checks pass
   without it.
 
