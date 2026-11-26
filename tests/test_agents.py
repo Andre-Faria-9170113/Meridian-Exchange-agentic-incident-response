@@ -35,9 +35,9 @@ def answer(info, data):
 
 class Script:
     def __init__(self, fake_ref_once=False, reviewer_fails=False, act_without_review=False, reviewer_loops=False,
-                 triage_repeats=False):
+                 triage_repeats=False, strays=False):
         self.fake_ref_once, self.reviewer_fails, self.act_without_review = fake_ref_once, reviewer_fails, act_without_review
-        self.reviewer_loops, self.triage_repeats = reviewer_loops, triage_repeats
+        self.reviewer_loops, self.triage_repeats, self.strays = reviewer_loops, triage_repeats, strays
 
     async def __call__(self, messages, info):
         instructions, done = info.instructions or "", returns(messages)
@@ -54,8 +54,14 @@ class Script:
                                  "unrelated": [i["key"] for i in issues if i["key"] not in related + [incident]],
                                  "reasoning": "Same component and symptom", "evidence": refs})
         if "You are the investigator" in instructions:
+            if self.strays and not done:  # reads a dependency first, then calls an unhealthy gateway no_fault
+                return call("read_metrics", {"component": "reference-db", "per_instance": True})
+            done = [(name, content) for name, content in done if "error" not in content]
             if not done:
                 return call("read_metrics", {"component": "order-gateway", "per_instance": True})
+            if self.strays and not retried(messages):
+                return answer(info, {"component": "order-gateway", "cause_kind": "no_fault", "cause": "looks fine",
+                                     "evidence": refs, "proposal": {"action": "none", "reason": "no fault"}})
             latest = done[0][1]["readings"][-1]["instances"]
             hot = next(name for name, values in latest.items() if values["memory_pct"] > 90)
             evidence = ["T99"] if self.fake_ref_once and not retried(messages) else refs
@@ -129,6 +135,14 @@ def test_repeated_read_is_refused_without_touching_the_systems(tmp_path):
     searches = [e for e in state["events"] if e["caller"] == "triage" and e["tool"] == "tickets.search_issues"]
     assert len(searches) == 1 and [c["reason"] for c in state["limited_calls"]] == ["repeated"]
     assert f"you already have this result as {searches[0]['ref']}" in json.dumps(state["model_messages"]["triage"])
+
+
+def test_investigator_stays_on_its_component_and_cannot_call_a_fault_no_fault(tmp_path):
+    report, state, effects = execute(tmp_path, Script(strays=True))
+    assert report["status"] == "recovered" and len(effects) == 1
+    assert [(c["caller"], c["reason"]) for c in state["limited_calls"]] == [("investigator", "scope")]
+    assert not any(e["caller"] == "investigator" and e["args"].get("component") == "reference-db" for e in state["events"])
+    assert "no_fault contradicts" in json.dumps(state["model_messages"]["investigator"])
 
 
 def test_orchestrator_cannot_act_without_a_review(tmp_path):

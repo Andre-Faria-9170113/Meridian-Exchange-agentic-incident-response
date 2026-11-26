@@ -148,6 +148,8 @@ class Gateway:
             key, limit = CLAMPS[name]
             if key in args and isinstance(args[key], int):
                 args[key] = max(1, min(args[key], limit))
+            elif key not in args and "." in name:  # an MCP server's own default can be large (list_alerts: 50)
+                args[key] = limit
         for attempt in (1, 2):
             events = self.checkpoint.data["events"]
             ref = f"T{len(events) + 1:02d}"

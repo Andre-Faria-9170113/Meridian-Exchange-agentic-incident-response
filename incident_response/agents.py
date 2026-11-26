@@ -23,8 +23,9 @@ from pydantic_ai.usage import RunUsage, UsageLimits
 
 from meridian.agent_runtime import IncidentDeps
 
-from .contracts import Correlation, Decision, Finding, Plan, Review
+from .contracts import Correlation, Decision, Finding, Plan, Reading, Review
 from .gateway import Gateway
+from .guards import healthy
 from .rules import RuleSpecialists, decide
 
 LIMITS = UsageLimits(request_limit=40, total_tokens_limit=150_000)  # the whole team, for one run
@@ -67,7 +68,8 @@ You are the triage specialist. Decide which component the incident is about and 
    Read a single ticket only when the search result is not enough to decide. A ticket belongs to this incident when it is about the same component (complaints about slow or
    rejected orders or acknowledgements are about order-gateway), its symptoms are compatible (slow vs errors) and it was
    opened within about two hours. Similar words are not enough: a market-data feed delay is not slow order acknowledgements.
-3. incident_ticket: the open MRX Incident for this problem, if any. related: other tickets and complaints about it.
+3. incident_ticket: the open MRX Incident ticket for this problem, or null if there is none (the incident id, INC-...,
+   is not a ticket). related: other tickets and complaints about it, including those linked from the incident ticket.
    unrelated: tickets you looked at that describe a different problem.
 """
 
@@ -79,7 +81,8 @@ You are the investigator. Find the cause and propose at most one mitigation from
 4. Decide:
    - exactly one instance above 90% memory: cause_kind instance_memory, propose restart_instance of that instance;
    - latest readings within the runbook's healthy range: cause_kind no_fault, action none;
-   - errors or a broken dependency: list recent changes and search the logs for the most recent change ids. Propose
+   - errors or a broken dependency: list recent changes without a component filter (the change may be on a
+     dependency) and search the logs for the most recent change ids. Propose
      rollback_change only if a log line names that change. If only timing suggests it, report it as suspected
      (cause_kind change, change_id set) with action none;
    - otherwise action none, saying what is missing.
@@ -124,6 +127,7 @@ class Seat:
 
     gateway: Gateway
     caller: str
+    scope: str | None = None  # investigator: the component triage named; dependency health is the reviewer's check
     seen: dict[str, str] = field(default_factory=dict)  # call signature -> ref of the earlier result
 
     async def call(self, tool: str, /, **args: Any) -> dict:
@@ -132,6 +136,10 @@ class Seat:
         reason = message = None
         if signature in self.seen:
             reason, message = "repeated", f"Repeated call: you already have this result as {self.seen[signature]}. Use it."
+        elif self.scope and tool == "read_metrics" and args.get("component") != self.scope:
+            # gpt-4.1-mini spent its reads on dependency metrics and never reached changes and logs (s02, s04)
+            reason, message = "scope", (f"You investigate {self.scope}; the reviewer checks dependencies. For errors, "
+                                        "list recent changes (all components) and search the logs for their change ids.")
         elif self.spent:  # only reachable with several calls in one response: tools are withdrawn once spent
             reason, message = "budget", (f"Read budget used ({READ_BUDGET[self.caller]} reads for one answer). Answer "
                                          "now with the evidence you have; if it is not enough, say what is missing.")
@@ -227,6 +235,15 @@ def ticket_keys_seen(gateway: Gateway) -> set[str]:
     return keys
 
 
+def latest_reading(gateway: Gateway, component: str) -> tuple[str, Reading] | None:
+    """The most recent successful metrics reading of a component in this run, with its ref."""
+    for event in reversed(gateway.checkpoint.data["events"]):
+        result = event.get("result") or {}
+        if event["tool"] == "read_metrics" and result.get("component") == component and result.get("readings"):
+            return event["ref"], Reading.model_validate(result["readings"][-1])
+    return None
+
+
 def specialist(model: Any, caller: str, output_type: type, instructions: str, gateway: Gateway) -> Agent:
     # Once the read budget is spent the tools are withdrawn, so the only move left is to answer. Refusing calls was not
     # enough: gpt-4.1-mini kept calling refused tools until its request cap and gave no answer at all.
@@ -247,7 +264,13 @@ def specialist(model: Any, caller: str, output_type: type, instructions: str, ga
             keys = [output.incident_ticket, *output.related, *output.unrelated]
             invented = [key for key in keys if key and key not in ticket_keys_seen(ctx.deps.gateway)]
             if invented:
-                raise ModelRetry(f"Tickets {invented} were not returned by your searches.")
+                raise ModelRetry(f"Tickets {invented} were not returned by your searches. Use only ticket keys from "
+                                 "search or get_issue results; an incident id (INC-...) is not a ticket, so use null.")
+        if isinstance(output, Finding) and output.cause_kind == "no_fault":
+            seen = latest_reading(ctx.deps.gateway, output.component)
+            if seen and not healthy(output.component, seen[1]):
+                raise ModelRetry(f"no_fault contradicts {seen[0]}: {output.component} latency {seen[1].latency_ms} ms, "
+                                 f"error rate {seen[1].error_rate:.1%}. That is a fault: follow the matching branch.")
         return output
 
     return agent
@@ -287,12 +310,12 @@ class LLMSpecialists:
                        "investigator": specialist(model, "investigator", Finding, INVESTIGATOR, crew.gateway),
                        "reviewer": specialist(model, "reviewer", Review, REVIEWER, crew.gateway)}
 
-    async def _ask(self, caller: str, prompt: str):
+    async def _ask(self, caller: str, prompt: str, scope: str | None = None):
         usage, trace = RunUsage(), self.crew.messages.setdefault(caller, [])
         limits = specialist_limits(self.crew.usage)
         with capture_run_messages() as messages:  # kept on failure too: a failed specialist must stay in the trace
             try:
-                result = await self.agents[caller].run(prompt, deps=Seat(self.crew.gateway, caller), usage=usage,
+                result = await self.agents[caller].run(prompt, deps=Seat(self.crew.gateway, caller, scope), usage=usage,
                                                        usage_limits=limits)
             finally:
                 self.crew.usage.incr(usage)
@@ -314,7 +337,7 @@ class LLMSpecialists:
             parts.append(f"Why a correction is needed: {note}")
         if question:
             parts.append(question)
-        return await self._ask("investigator", "\n\n".join(parts))
+        return await self._ask("investigator", "\n\n".join(parts), scope=correlation.component)
 
     async def review(self, finding: Finding, question: str = "") -> Review:
         parts = [self._incident(), f"Proposal to review (exact): {finding.model_dump_json()}"]
