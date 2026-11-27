@@ -47,10 +47,12 @@ def answer(info, data):
 
 class Script:
     def __init__(self, fake_ref_once=False, reviewer_fails=False, act_without_review=False, reviewer_loops=False,
-                 triage_repeats=False, strays=False, follow_up=False, wrong_target=False, nags=False):
+                 triage_repeats=False, strays=False, follow_up=False, wrong_target=False, nags=False,
+                 instance_as_component=False):
         self.fake_ref_once, self.reviewer_fails, self.act_without_review = fake_ref_once, reviewer_fails, act_without_review
         self.reviewer_loops, self.triage_repeats, self.strays = reviewer_loops, triage_repeats, strays
         self.follow_up, self.wrong_target, self.nags = follow_up, wrong_target, nags
+        self.instance_as_component = instance_as_component
 
     async def __call__(self, messages, info):
         instructions, done = info.instructions or "", returns(messages)
@@ -66,7 +68,9 @@ class Script:
             issues = done[1][1]["issues"]
             incident = next(i["key"] for i in issues if i["project"] == "MRX" and i.get("component") == "order-gateway")
             related = [i["key"] for i in issues if i["key"] != incident and "acknowledg" in i["summary"].lower()]
-            return answer(info, {"component": "order-gateway", "incident_ticket": incident, "related": related,
+            # what gpt-4.1-mini did once: name the instance with the memory alert as the component
+            component = "order-gateway-1" if self.instance_as_component and not retried(messages) else "order-gateway"
+            return answer(info, {"component": component, "incident_ticket": incident, "related": related,
                                  "unrelated": [i["key"] for i in issues if i["key"] not in related + [incident]],
                                  "reasoning": "Same component and symptom", "evidence": refs})
         if "You are the investigator" in instructions:
@@ -281,3 +285,11 @@ def test_a_corrected_investigator_starts_from_its_earlier_finding(tmp_path):
     boundary = state["attempts"][0]["events_before_correction"]
     reads = [e for e in state["events"][boundary:] if e["caller"] == "investigator"]
     assert 1 <= len(reads) <= CORRECTION_BUDGET
+
+
+def test_triage_must_name_a_component_not_an_instance(tmp_path):
+    report, state, effects = execute(tmp_path, Script(instance_as_component=True))
+    assert report["status"] == "recovered" and len(effects) == 1
+    assert state["plan"]["correlation"]["component"] == "order-gateway"
+    assert "order-gateway-1 is an instance: use its component, order-gateway" in json.dumps(state["model_messages"]["triage"])
+    assert "limited_calls" not in state  # the investigator's scope was the component: nothing refused

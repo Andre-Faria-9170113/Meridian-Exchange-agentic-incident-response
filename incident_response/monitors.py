@@ -6,7 +6,7 @@ change nothing and decide nothing. They check, independently of the code that ac
 
 - repeated_work: no specialist ran the same read twice within one attempt (a correction re-reads on purpose:
   the world has moved on), and how often a repeat had to be refused (going round in circles);
-- circling: reads refused as outside the specialist's scope, a specialist asked more often than one answer and one
+- circling: reads refused as outside the specialist's scope (from the third in a run), a specialist asked more often than one answer and one
   follow-up per round, and orchestrator questions refused for that reason;
 - approval: every applied action has an approved approval for exactly that action and target, still valid
   when the action ran (15 minutes, not across the session opening);
@@ -26,6 +26,8 @@ from .agents import LIMITS
 from .policy import APPROVAL_TTL_MINUTES
 
 MUTATIONS = {"restart_instance", "rollback_change"}
+# One stray read outside the scope happened in most milestone-3.1 runs; alerting on it hid the run with 20
+SCOPE_REFUSALS = 3
 
 
 def watch(data: dict, trading_session=None) -> dict:
@@ -50,7 +52,7 @@ def watch(data: dict, trading_session=None) -> dict:
             alert("repeated_work", "warning", f"{caller} tried {count} repeated call(s); refused without touching the systems")
 
     for (caller, reason), count in sorted(limited.items()):
-        if reason == "scope":
+        if reason == "scope" and count >= SCOPE_REFUSALS:
             alert("circling", "warning", f"{caller} tried {count} read(s) outside its scope; refused")
         if reason == "asked_again":
             alert("circling", "warning", f"{caller} asked a specialist again {count} time(s) past the limit; refused")

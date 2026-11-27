@@ -83,7 +83,9 @@ The following were fixed in code after this evidence was recorded, and are not m
 - triage must name a component, not an instance. `order-gateway-1` is refused with "use its component,
   order-gateway";
 - a first-line refusal on a critical component is not correctable, so the run escalates at once;
-- the circling monitor ignores one or two scope refusals.
+- the circling monitor ignores one or two scope refusals. Recomputed over these same 132 traces, circling alerts
+  drop from 49 to 13 (orchestrator) and from 50 to 12 (pipeline), with s03-scope-refused r3 still among them. The
+  other monitors are unchanged, still with 0 critical alerts.
 
 ## Limits
 

@@ -26,11 +26,15 @@ class PolicyRefusal(Exception):
 
     `correctable`: the proposal was the problem (a critical target, evidence that does not hold), so the coordinator
     may propose something else once. Not when a person denied the approval, and not when the identity may not
-    remediate at all: a different proposal would not change either answer."""
+    remediate at all: a different proposal would not change either answer.
 
-    def __init__(self, reason: str, correctable: bool = True):
+    `escalate`: the remedy is a person with more authority, not another proposal (first-line on a critical
+    component), so the run escalates at once. In the milestone-3.1 evaluation both corrections followed this refusal
+    with the right cause already found, and each only escalated, about 15k input tokens later."""
+
+    def __init__(self, reason: str, correctable: bool = True, escalate: bool = False):
         super().__init__(reason)
-        self.correctable = correctable
+        self.correctable, self.escalate = correctable and not escalate, escalate
 
 
 def facts(deps: IncidentDeps, proposal: Proposal, approval_ref: str | None = None) -> ActionRequest:
@@ -49,6 +53,14 @@ def authority_refusal(deps: IncidentDeps, proposal: Proposal) -> str | None:
     if request.role == "first-line" and request.critical:
         return f"first-line may not {proposal.action} on {request.component}: it is a critical component (escalate to on-call)"
     return None
+
+
+def needs_on_call(deps: IncidentDeps, proposal: Proposal) -> bool:
+    """Is the proposal refused only because first-line may not touch a critical component?"""
+    if proposal.action not in {"restart_instance", "rollback_change"}:
+        return False
+    request = facts(deps, proposal)
+    return request.component is not None and request.role == "first-line" and request.critical
 
 
 def approver_role(deps: IncidentDeps, proposal: Proposal) -> str:

@@ -60,13 +60,11 @@ def test_controlled_outcomes_have_no_effects(tmp_path, case, status):
 
 
 def test_critical_change_is_named_but_not_rolled_back_by_first_line(tmp_path):
-    """The refusal goes back to the coordinator once; with the rollback excluded there is nothing left: escalate."""
+    """The refusal's remedy is on-call, not another proposal: escalate at once, without spending a correction."""
     report = execute(tmp_path, "s02-hidden-config-change")
     assert "CHG-4471" in report["root_cause"] and report["status"] == "escalated"
     assert any("critical component" in refusal for refusal in report["refusals"])
-    attempts = state(tmp_path)["attempts"]
-    assert len(attempts) == 1 and attempts[0]["outcome"]["correction"]["failed"] == ["rollback_change", "CHG-4471"]
-    assert report["summary"].startswith("First attempt (refused)")
+    assert "attempts" not in state(tmp_path) and report["summary"].startswith("Escalated to on-call, refused")
 
 
 def test_a_person_s_denial_is_not_corrected_around(tmp_path):

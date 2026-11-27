@@ -306,7 +306,16 @@ def specialist(model: Any, caller: str, output_type: type, instructions: str, ga
         if not set(output.evidence) & own:
             raise ModelRetry("Cite at least one ref from a tool result you read yourself.")
         if isinstance(output, Correlation):
-            keys = [output.incident_ticket, *output.related, *output.unrelated]
+            # The investigator's scope is this name: an instance (order-gateway-1) made every metrics read fail or be
+            # refused (milestone-3.1, s03-scope-refused r3: 20 refusals, then the request cap)
+            components = ctx.deps.gateway.tools.sim.state.components
+            if output.component not in components:
+                owner = next((name for name, component in components.items()
+                              if any(i.instance_id == output.component for i in component.instances)), None)
+                raise ModelRetry(f"{output.component} is an instance: use its component, {owner}, and name the "
+                                 "instance in your reasoning." if owner else
+                                 f"Unknown component {output.component!r}: use one of {sorted(components)}.")
+            keys =[output.incident_ticket, *output.related, *output.unrelated]
             invented = [key for key in keys if key and key not in ticket_keys_seen(ctx.deps.gateway)]
             if invented:
                 raise ModelRetry(f"Tickets {invented} were not returned by your searches. Use only ticket keys from "

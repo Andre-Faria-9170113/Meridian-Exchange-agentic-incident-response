@@ -40,7 +40,8 @@ from .gateway import Gateway, ToolFailure, redact, require
 from .guards import evidence_refusal, verify
 from .memory import recall, remember
 from .monitors import watch
-from .policy import REMEDIATION_ROLES, PolicyRefusal, approval_refusal, approver_role, authority_refusal
+from .policy import (REMEDIATION_ROLES, PolicyRefusal, approval_refusal, approver_role, authority_refusal,
+                     needs_on_call)
 from .rules import RuleSpecialists
 from .state import Checkpoint
 from .world import create_world, load_world
@@ -168,7 +169,8 @@ async def act(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, plan: Pla
     finding, proposal = plan.finding, plan.finding.proposal
     denied = authority_refusal(deps, proposal)
     if denied:
-        raise PolicyRefusal(denied, correctable=deps.identity["role"] in REMEDIATION_ROLES)
+        raise PolicyRefusal(denied, correctable=deps.identity["role"] in REMEDIATION_ROLES,
+                            escalate=needs_on_call(deps, proposal))
     key = f"{state.data['run_id']}:{proposal.action}:{proposal.target}"
     known = require(await gateway.call("action_status", idempotency_key=key))
     if known.get("status") != "completed":
@@ -223,6 +225,9 @@ async def carry_out(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, pla
         return Outcome("escalated", f"Escalated to on-call: {plan.decision.rationale}")
     except PolicyRefusal as refusal:
         proposal = plan.finding.proposal
+        if refusal.escalate:
+            return Outcome("escalated", f"Escalated to on-call, refused before any effect: {refusal}",
+                           refusals=[str(refusal)])
         return Outcome("refused", f"Refused before any effect: {refusal}", refusals=[str(refusal)],
                        correction={"reason": f"Refused by policy: {refusal}", "failed": [proposal.action, proposal.target]}
                        if refusal.correctable else None)

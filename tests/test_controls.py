@@ -154,8 +154,10 @@ def test_monitors_flag_silent_failures_in_a_journal():
     clean = {**data, "events": [read, restart, {**read, "caller": "harness"}], "actions": [{**action, "tick": 30}],
              "limited_calls": [], "usage": {}}
     assert watch(clean)["alerts"] == []
-    circling = {"limited_calls": [{"caller": "investigator", "reason": "scope"},
-                                  {"caller": "orchestrator", "reason": "asked_again"}],
+    circling = {"limited_calls": [{"caller": "investigator", "reason": "scope"}] * 3
+                + [{"caller": "orchestrator", "reason": "asked_again"}],
                 "model_messages": {"investigator": [[], [], [], []], "triage": [[]]}}
     details = [a["detail"] for a in watch(circling)["alerts"] if a["monitor"] == "circling"]
     assert len(details) == 3 and "investigator answered 4 times in 1 round(s)" in details
+    stray = {"limited_calls": [{"caller": "investigator", "reason": "scope"}] * 2}  # one or two stray reads: no alert
+    assert watch(stray)["alerts"] == []
