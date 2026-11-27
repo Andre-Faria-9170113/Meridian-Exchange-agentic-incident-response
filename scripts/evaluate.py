@@ -98,6 +98,7 @@ async def run_case(case: str, directory: Path, memory_path: Path, args) -> dict:
             "failed_checks": [f"{c['name']}: {c['detail']}" for c in checks if not c["passed"]], "checks": checks,
             "error": error, "tool_calls": tool_calls, "model_requests": usage.get("requests", 0),
             "input_tokens": usage.get("input_tokens", 0), "output_tokens": usage.get("output_tokens", 0),
+            "usage_by_agent": state.get("usage_by_agent", {}), "models_used": state.get("models_used", {}),
             "seconds": seconds, "run_dir": str(directory)}
 
 

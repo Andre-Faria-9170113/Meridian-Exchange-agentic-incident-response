@@ -215,3 +215,39 @@ def test_orchestrator_gets_one_correction_after_a_refusal(tmp_path):
     assert "above 90% memory" in report["refusals"][0] and report["summary"].startswith("First attempt (refused)")
     assert len(state["model_messages"]["investigator"]) == 2  # asked again, fresh, told what not to propose
     assert "Correction needed" in json.dumps(state["model_messages"]["orchestrator"])
+
+
+def test_usage_is_recorded_per_agent_and_adds_up(tmp_path):
+    _, state, _ = execute(tmp_path, Script())
+    by_agent, total = state["usage_by_agent"], state["usage"]
+    assert set(by_agent) == {"triage", "investigator", "reviewer", "orchestrator"}
+    assert all(sum(used[key] for used in by_agent.values()) == total[key] for key in total)
+    assert all(used["requests"] > 0 for used in by_agent.values())
+
+
+def test_fallback_model_answers_when_the_primary_fails_and_the_same_rules_apply(tmp_path):
+    from pydantic_ai.exceptions import ModelAPIError
+    from pydantic_ai.models.fallback import FallbackModel
+
+    async def outage(messages, info):
+        raise ModelAPIError("primary", "503 service unavailable")
+
+    model = FallbackModel(FunctionModel(outage, model_name="primary"), FunctionModel(Script(fake_ref_once=True), model_name="plan-b"))
+    report = asyncio.run(asyncio.wait_for(run(ROOT / "cases/s03-alert-and-ticket.yaml", tmp_path / "run", mode="llm",
+                                              model=model, memory_path=tmp_path / "memory.db"), 30))
+    state = json.loads((tmp_path / "run/checkpoint.json").read_text())
+    assert report["status"] == "recovered"
+    assert all(names == ["plan-b"] for names in state["models_used"].values())
+    assert "Unknown evidence refs" in json.dumps(state["model_messages"]["investigator"])  # plan B was validated too
+
+
+def test_routing_adds_the_fallback_only_when_configured(monkeypatch):
+    from pydantic_ai.models.fallback import FallbackModel
+
+    from incident_response.workflow import routed
+
+    monkeypatch.delenv("OPENAI_FALLBACK_MODEL", raising=False)
+    assert routed("openai:gpt-4.1-mini") == "openai:gpt-4.1-mini"
+    monkeypatch.setenv("OPENAI_FALLBACK_MODEL", "gpt-4.1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-used")
+    assert isinstance(routed("openai:gpt-4.1-mini"), FallbackModel)

@@ -17,6 +17,7 @@ ran, and the approval service says whether an approval was given and whether it 
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -25,6 +26,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 from pydantic_ai.exceptions import AgentRunError
+from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.usage import RunUsage
 
 from meridian.agent_runtime import IncidentDeps, identity_for
@@ -80,9 +82,25 @@ def note(state: Checkpoint, kind: str, **details: Any) -> None:
     state.set(resume_log=state.data.get("resume_log", []) + [{"kind": kind, **details}])
 
 
+def fallback_name() -> str | None:
+    name = os.getenv("OPENAI_FALLBACK_MODEL")
+    return f"openai:{name}" if name else None
+
+
+def routed(model: Any) -> Any:
+    """Session 9 routing. The fixture is the no-model route. In llm mode one model serves every agent; with
+    OPENAI_FALLBACK_MODEL set, an API failure of the primary (outage, rate limit) moves that request to the
+    fallback. Plan B is held to the same rules: its answers pass the same output validators, read budgets,
+    gateway permissions and policy, so it cannot do what plan A may not. If both fail, the specialist fails and
+    the run escalates to a person instead of guessing."""
+    fallback = fallback_name()
+    return FallbackModel(model, fallback) if fallback and isinstance(model, str) else model
+
+
 def coordinator_for(crew: Crew, mode: str, coordination: str, model: Any):
     if mode == "fixture":
         return Pipeline(crew, RuleSpecialists(crew.gateway, crew.deps, crew.brief))
+    model = routed(model)
     specialists = LLMSpecialists(crew, model)
     return Orchestrator(crew, specialists, model) if coordination == "orchestrator" else Pipeline(crew, specialists)
 
@@ -286,6 +304,7 @@ async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", 
         state.set(version=__version__, run_id=uuid4().hex, phase="start", mode=mode,
                   coordination=coordination if mode == "llm" else "pipeline (deterministic rules)",
                   model=str(model) if mode == "llm" else "none (deterministic fixture)",
+                  fallback_model=fallback_name() if mode == "llm" else None,
                   scenario_sha256=hashlib.sha256((directory / "scenario.yaml").read_bytes()).hexdigest(),
                   memory_path=str((memory_path or directory.parent / "memory.db").resolve()), events=[])
 
@@ -312,6 +331,7 @@ async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", 
             crew = Crew(gateway, deps, brief)
             if state.data.get("usage"):  # resumed: keep counting from what the earlier process used
                 crew.usage = RunUsage(**state.data["usage"])
+                crew.usage_by_agent = {agent: RunUsage(**used) for agent, used in state.data.get("usage_by_agent", {}).items()}
                 crew.messages = state.data.get("model_messages", {})
             coordinator = coordinator_for(crew, mode, coordination, model)
             attempts: list[dict] = state.data.get("attempts", [])
@@ -380,10 +400,30 @@ def build_report(brief: dict, plan: Plan | None, outcome: Outcome, crew: Crew | 
                   refusals=outcome.refusals, summary=summary)
 
 
+def usage_dict(usage: RunUsage) -> dict:
+    return {"requests": usage.requests, "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
+            "tool_calls": usage.tool_calls}
+
+
+def models_used(messages: dict[str, list]) -> dict[str, list[str]]:
+    """Which model actually answered each agent (the primary, or the fallback after a failure)."""
+    def names(value: Any) -> set[str]:
+        if isinstance(value, dict):
+            found = {value["model_name"]} if value.get("kind") == "response" and value.get("model_name") else set()
+            return found.union(*(names(item) for item in value.values()))
+        if isinstance(value, list):
+            return set().union(*(names(item) for item in value))
+        return set()
+    return {agent: sorted(names(conversation)) for agent, conversation in messages.items()}
+
+
 def record_usage(state: Checkpoint, crew: Crew | None) -> None:
+    """Usage for the whole team and per agent. The orchestrator's own share is the total minus its specialists'."""
     if crew is None:
         return
-    usage = crew.usage
-    state.set(usage={"requests": usage.requests, "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
-                     "tool_calls": usage.tool_calls},
+    by_agent = {agent: usage_dict(used) for agent, used in crew.usage_by_agent.items()}
+    if "orchestrator" in crew.messages:
+        total = usage_dict(crew.usage)
+        by_agent["orchestrator"] = {key: total[key] - sum(used[key] for used in by_agent.values()) for key in total}
+    state.set(usage=usage_dict(crew.usage), usage_by_agent=by_agent, models_used=models_used(crew.messages),
               model_messages=crew.messages, specialist_failures=crew.failures)

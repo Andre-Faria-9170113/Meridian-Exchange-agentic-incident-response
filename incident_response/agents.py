@@ -334,6 +334,7 @@ class Crew:
     note: str = ""
     failures: list[str] = field(default_factory=list)
     usage: RunUsage = field(default_factory=RunUsage)
+    usage_by_agent: dict[str, RunUsage] = field(default_factory=dict)  # specialists; the orchestrator is the rest
     messages: dict[str, list] = field(default_factory=dict)
 
     def plan(self, decision: Decision) -> Plan:
@@ -369,6 +370,7 @@ class LLMSpecialists:
                                                        usage_limits=limits)
             finally:
                 self.crew.usage.incr(usage)
+                self.crew.usage_by_agent.setdefault(caller, RunUsage()).incr(usage)
                 trace.append(as_json(messages))
         self.sessions[caller] = (subject, seat, result.all_messages())
         return result.output

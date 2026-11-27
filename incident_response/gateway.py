@@ -11,6 +11,13 @@ Every call, by a specialist or by harness code, goes through `Gateway.call`, whi
 - blocks a tool for the rest of the run after an `insufficient_scope` refusal;
 - masks personal data in results before any model or file sees them;
 - gives each result a reference (T01, T02, ...) that specialists must cite as evidence.
+
+As session 9's MCP gateway: identity is the run's actor and the caller (who may call what); allowed tools are
+CALLER_TOOLS plus the reviewed catalog lock; credentials never reach a model (keys stay in .env and the
+servers run in-process); the journal is the audit; masking covers what is logged and what a model sees.
+Admission is enforced around it: read budgets per specialist answer and request and token limits per run
+(agents.py). There is no response cache on purpose: incident readings change every minute, and a cache is only
+right for the same answer while it is still true.
 """
 from __future__ import annotations
 
