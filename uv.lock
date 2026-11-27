@@ -1447,7 +1447,7 @@ wheels = [
 
 [[package]]
 name = "meridian-incident-response"
-version = "0.3.0"
+version = "0.3.1"
 source = { virtual = "." }
 dependencies = [
     { name = "fastmcp-slim", extra = ["server"] },
