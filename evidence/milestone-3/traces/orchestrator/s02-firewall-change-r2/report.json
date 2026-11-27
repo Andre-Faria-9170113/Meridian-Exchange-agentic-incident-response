@@ -1,0 +1,15 @@
+{
+  "incident_id": "INC-2104",
+  "status": "escalated",
+  "root_cause": "Host firewall rule update CHG-4490 denies egress to reference-db; causes high error rate and HTTP 503 errors on order-gateway.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T08",
+    "T09"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: The investigator identified a firewall change causing critical connectivity issues and HTTP 503 errors, but proposed no immediate action. This leaves service degraded without mitigation, which requires escalation for appropriate resolution steps."
+}

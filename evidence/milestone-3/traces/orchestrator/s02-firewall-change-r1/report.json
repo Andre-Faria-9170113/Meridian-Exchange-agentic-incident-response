@@ -1,0 +1,16 @@
+{
+  "incident_id": "INC-2104",
+  "status": "escalated",
+  "root_cause": "Host firewall rules update (CHG-4490) now denies egress from order-gateway to reference-db on port 5432, seen as WARN log and matches timing of error rate increase and latency.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: The investigator found a firewall change causing the issue but proposes no immediate mitigation. The reviewer cannot approve no action. Escalation is needed for urgent rollback or fix due to impact on order-gateway critical connectivity."
+}

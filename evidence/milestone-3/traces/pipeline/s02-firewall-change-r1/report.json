@@ -1,0 +1,18 @@
+{
+  "incident_id": "INC-2104",
+  "status": "escalated",
+  "root_cause": "Host firewall rule update CHG-4490 applied at 14:00 denies egress to reference-db:5432 from order-gateway-1, causing connection refused errors observed in logs and resulting in high error rate and latency.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09",
+    "T10",
+    "T15"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: No safe action within the runbooks: Rollback firewall rule change CHG-4490 which is blocking connections to reference-db and causing high error rates and latencies in order-gateway."
+}

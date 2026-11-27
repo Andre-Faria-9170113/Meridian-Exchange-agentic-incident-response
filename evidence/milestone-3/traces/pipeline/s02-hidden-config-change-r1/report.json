@@ -1,0 +1,15 @@
+{
+  "incident_id": "INC-2102",
+  "status": "escalated",
+  "root_cause": "Order-gateway shows 503 errors with reason 'database connection rejected' in logs, indicating a broken dependency link to reference-db.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T21"
+  ],
+  "actions_taken": [],
+  "refusals": [
+    "first-line may not rollback_change on reference-db: it is a critical component (escalate to on-call)"
+  ],
+  "summary": "First attempt (refused): Refused before any effect: first-line may not rollback_change on reference-db: it is a critical component (escalate to on-call) After one correction: Escalated to on-call: No safe action within the runbooks: Rollback on reference-db is refused by policy for first-line; escalate to on-call for dependency issue resolution."
+}

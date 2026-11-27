@@ -1,0 +1,11 @@
+{
+  "incident_id": "INC-4121",
+  "status": "insufficient_information",
+  "root_cause": "Undetermined",
+  "incident_ticket": null,
+  "related_tickets": [],
+  "evidence": [],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Stopped in a controlled way: UsageLimitExceeded: The next request would exceed the request_limit of 40. Consider raising the limit, or see the docs on usage limits for budget-aware patterns: https://pydantic.dev/docs/ai/core-concepts/agent/#usage-limits"
+}

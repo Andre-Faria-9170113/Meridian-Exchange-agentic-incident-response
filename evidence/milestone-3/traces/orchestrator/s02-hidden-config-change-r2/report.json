@@ -1,0 +1,20 @@
+{
+  "incident_id": "INC-2102",
+  "status": "escalated",
+  "root_cause": "Recent change CHG-4471 on reference-db reduced max_connections drastically, causing connection rejections seen in WARN logs at the time of the incident. This likely impacted order-gateway's ability to serve requests, resulting in HTTP 503 errors.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T19",
+    "T20",
+    "T21",
+    "T23",
+    "T24",
+    "T25"
+  ],
+  "actions_taken": [],
+  "refusals": [
+    "No log line names CHG-4310; timing alone does not justify a rollback"
+  ],
+  "summary": "First attempt (refused): Refused before any effect: No log line names CHG-4310; timing alone does not justify a rollback After one correction: Escalated to on-call: Investigator found the root cause in a dependency change (CHG-4471 on reference-db) with no immediate mitigation possible on order-gateway, and rollback of the suspected deploy CHG-4310 is refused by policy. Reviewer confirms no actionable mitigation proposed. Escalation needed for dependency fix."
+}

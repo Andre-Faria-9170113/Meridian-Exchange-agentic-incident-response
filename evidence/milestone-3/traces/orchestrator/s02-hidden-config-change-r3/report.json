@@ -1,0 +1,19 @@
+{
+  "incident_id": "INC-2102",
+  "status": "escalated",
+  "root_cause": "The order-gateway instances show a high error rate (30.1%) consistently, which is a fault. However, there is no evidence of instance memory exhaustion or a related error or dependency issue within order-gateway or its dependencies. The cause is not clear from current evidence, and the runbook directs dependency health to the reviewer.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T05",
+    "T06",
+    "T07",
+    "T08",
+    "T09",
+    "T10",
+    "T11"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: Investigator confirmed a fault with high error rate on order-gateway but could not identify a clear cause or mitigation. No action was proposed due to insufficient evidence, so escalation is needed for deeper investigation."
+}

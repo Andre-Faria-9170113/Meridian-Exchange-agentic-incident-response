@@ -198,10 +198,17 @@ What remains: the real-model evidence and the tag.
   - `routed()` wraps the model in a `FallbackModel` when `OPENAI_FALLBACK_MODEL` is set;
   - `usage_by_agent` and `models_used` are in the checkpoint and in the evaluator rows;
   - the gateway docstring maps it to session 9 (identity, allowlist, credentials, audit, masking, admission, no cache).
-- Next: the user's OK for `--repeat 3` × orchestrator and pipeline at a clean revision (about $1.6–2), then
-  `evidence/milestone-3/` compared with `evidence/milestone-2/`, then tag `milestone-3`.
-- Watch in the evidence: a correction adds reads and tokens. s02 is capped at 40k input tokens, and the
-  memory-crash deadline is about 22 calls.
+- **Repeated evaluation done** (`evidence/milestone-3/README.md`, at `56b053b`, x3, $1.59): orchestrator 60/66
+  (m2: 59), pipeline 62/66 (m2: 60), fixture 22/22, 0 critical monitor alerts.
+  - The recovery fix is confirmed on a real run: orchestrator s02-firewall-change r3 rolled back CHG-4490 and was
+    verified `recovered` at latency 32–34 ms with errors at 0.1%. It is the first firewall pass on a real model.
+  - The correction loop triggered twice, both in s02-hidden-config-change, after a wrong CHG-4310 proposal was
+    refused. It is correct but costs about 20k more input tokens (56–66k against 40k), because the investigator
+    restarts from scratch. Possible next step: hand the corrected investigator its earlier cited evidence.
+  - s04-conflicting-shift-notes went 1/6 → 6/6 with no relevant code change: variance plus a lenient check. Not
+    claimed as an improvement.
+  - s04-recurring-leak-day2 orchestrator r2 went round in circles (4× investigator, 3× triage, 7 scope refusals)
+    and hit the 40-request cap. Monitor gap: scope refusals raise no alert.
 
 ## Plan (in order)
 

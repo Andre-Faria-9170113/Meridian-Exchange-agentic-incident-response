@@ -1,0 +1,21 @@
+{
+  "incident_id": "INC-2104",
+  "status": "escalated",
+  "root_cause": "Host firewall rule updated in change CHG-4490 denies egress traffic from order-gateway to reference-db on port 5432, causing failures and high error rate.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T10",
+    "T11",
+    "T12",
+    "T13",
+    "T14",
+    "T15"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: No safe action within the runbooks: Rollback change CHG-4490 to restore connectivity between order-gateway and reference-db and resolve the high error rate and 503 errors."
+}
