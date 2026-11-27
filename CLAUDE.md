@@ -210,6 +210,30 @@ What remains: the real-model evidence and the tag.
   - s04-recurring-leak-day2 orchestrator r2 went round in circles (4× investigator, 3× triage, 7 scope refusals)
     and hit the 40-request cap. Monitor gap: scope refusals raise no alert.
 
+## Milestone 3.1 state (27 November 2026)
+
+- `8e83486`:
+  - a correction starts from the investigator's earlier finding and cited evidence (`CORRECTION_BUDGET = 4`);
+  - `MAX_ANSWERS = 2` per specialist per round (`asked_again` refusals);
+  - a triage follow-up cannot replace the component;
+  - circling monitor.
+- `f156975` is version 0.3.1.
+- **Repeated evaluation** (`evidence/milestone-3.1/README.md`, at `f156975`, x3, $1.55, tag `milestone-3.1` at
+  `346c097`):
+  - orchestrator 59/66, pipeline 63/66, fixture 22/22, 0 critical alerts;
+  - no run hit the request cap (max 33);
+  - corrections about 15k tokens cheaper, but still over 40k.
+- Found in the traces, fixed at `9a64a7a` (not yet measured on a real model):
+  - triage named the instance `order-gateway-1` as the component, which caused 20 scope refusals (s03-scope-refused
+    orchestrator r3); the validator now refuses an instance;
+  - both corrections followed a first-line critical-component refusal; it now escalates at once
+    (`PolicyRefusal.escalate`, `policy.needs_on_call`);
+  - the circling monitor alerted on one stray scope refusal; it now alerts from the third (retroactively 49 → 13
+    and 50 → 12).
+- `5ead7e4` is version 0.3.2. 51 tests pass, fixture 22/22.
+- Over three milestones: pipeline 60, 62, 63; orchestrator 59, 60, 59. The remaining failures are mostly model
+  judgment (firewall: no rollback proposed; s04-conflicting: CHG-4471 not named; one triage ticket choice).
+
 ## Plan (in order)
 
 0. **The user pushes** `main` and the tags to GitHub. Claude cannot push from here: no credentials.
