@@ -95,7 +95,8 @@ Architecture: see the README.
 Caveats to keep stating honestly:
 - The fixture rules were written knowing the public cases. A 22/22 fixture score is plumbing evidence, not an LLM
   result.
-- Real-model results so far are single runs (`--repeat 1`) on the s03 cases only. No s01, s02, s04 LLM runs yet.
+- Real-model results so far are single runs (`--repeat 1`), orchestrator only. The pipeline has never run on a real
+  model. The repeated evaluation for milestone 2 is the first measurement of variance.
 
 ## First real-model check (26 November 2026, gpt-4.1-mini)
 
@@ -124,6 +125,37 @@ Done. The results are in ignored `runs/` folders; the milestone 2 evidence will 
   - All three escalate safely without acting.
 - Gap: triage leaves `related` empty. MEM-1187 is linked from MRX-2210, but it is no longer reported. The checks pass
   without it.
+
+## Milestone 2 state (26–27 November 2026)
+
+Code done (`4488372` … `ba93639`). Only the repeated-evaluation evidence and the tag remain.
+- Memory operator CLI:
+  - `memory --memory <db> list [--all] | correct ID --text --source | forget ID --reason`;
+  - only a person may correct or forget (never the `first-line` identity), and only within their own team;
+  - the default time is the store's clock, one minute after its latest entry, because memory lives on the
+    simulated clock.
+- `run|resume --approver interactive`:
+  - a person answers at the terminal (only an explicit "yes" approves);
+  - the answer still goes through the systems' approval service (APR reference, audited);
+  - the scenario's approver is restored afterwards;
+  - refused without a terminal.
+- Budgets follow the procedures (`agents.py`):
+  - `READ_BUDGET` triage 3, investigator 7; `REVIEW_BUDGET` restart 4, rollback 5;
+  - `memory.recall` advances simulated time (`record_call`), so it stays in the budget;
+  - in the memory-crash cases the total is unchanged (+1 investigator, −1 reviewer).
+- Validators:
+  - an errors finding must have searched the logs for the change id, without a level filter, while reads remain;
+  - `no_fault` contradicted by metrics is rejected.
+- The investigator may read metrics only for triage's component.
+- Recall covers the component and its dependencies (topology), newest first, with the rule for disagreeing notes.
+- A follow-up question continues the specialist's conversation and budget. A new subject, a correction or a failure
+  starts fresh.
+- Evaluator: `--coordination orchestrator|pipeline`.
+- Real model, single run: 21/22 at `e50ec44`.
+  - s02-firewall-change at `ba93639`: names CHG-4490 from the WARN line but does not propose the rollback (model
+    judgment). Left as a known limit, not prompt-tuned.
+- Next: `--repeat 3` × orchestrator and pipeline, at a clean revision, into `evidence/milestone-2/`; compare with
+  `v0-starter` and `milestone-1`; tag.
 
 ## Plan (in order)
 
