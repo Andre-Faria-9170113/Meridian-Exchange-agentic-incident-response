@@ -18,12 +18,16 @@ from .gateway import Gateway, require
 HEALTH = {"order-gateway": {"latency_ms": 20.0, "error_rate": 0.01},
           "market-data": {"latency_ms": 10.0, "error_rate": 0.01}}
 DEFAULT_HEALTH = {"error_rate": 0.01}
+# Recovery after an action follows that action's runbook. A rollback (reference-db-connections) recovers when the
+# client error rate is below 1% with the links up. Latency drains with the queue afterwards: requiring the gateway's
+# latency criterion too reported a correct CHG-4490 rollback as not recovered (milestone-2 evidence, pipeline r3).
+RECOVERY = {"rollback_change": {"error_rate": 0.01}}
 MEMORY_LIMIT_PCT = 90.0
 VERIFY_ATTEMPTS = 10
 
 
-def healthy(component: str, reading: Reading) -> bool:
-    limits = HEALTH.get(component, DEFAULT_HEALTH)
+def healthy(component: str, reading: Reading, action: str | None = None) -> bool:
+    limits = RECOVERY.get(action) or HEALTH.get(component, DEFAULT_HEALTH)
     return all(getattr(reading, metric) < limit for metric, limit in limits.items())
 
 
@@ -84,8 +88,10 @@ async def evidence_refusal(gateway: Gateway, deps: IncidentDeps, finding: Findin
     return f"Unsupported action {proposal.action}"
 
 
-async def verify(gateway: Gateway, deps: IncidentDeps, component: str, after_tick: int | None) -> tuple[bool, list[str], str]:
-    """Three consecutive healthy readings (after the action, if any) and healthy dependency links."""
+async def verify(gateway: Gateway, deps: IncidentDeps, component: str, after_tick: int | None,
+                 action: str | None = None) -> tuple[bool, list[str], str]:
+    """Three consecutive healthy readings (after the action, if any, by that action's runbook criterion) and healthy
+    dependency links."""
     refs: list[str] = []
     for _ in range(VERIFY_ATTEMPTS):
         observation = await metrics(gateway, component)
@@ -93,7 +99,7 @@ async def verify(gateway: Gateway, deps: IncidentDeps, component: str, after_tic
         recent = observation.readings[-3:]
         fresh = after_tick is None or recent[0].tick > after_tick
         consecutive = len(recent) == 3 and all(b.tick == a.tick + 1 for a, b in zip(recent, recent[1:]))
-        if fresh and consecutive and all(healthy(component, row) for row in recent):
+        if fresh and consecutive and all(healthy(component, row, action) for row in recent):
             down = await links_down(gateway, deps, component)
             if not down:
                 return True, refs, f"{component} healthy in 3 consecutive readings ({observation.source_ref})"

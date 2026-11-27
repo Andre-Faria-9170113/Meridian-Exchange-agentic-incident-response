@@ -120,3 +120,15 @@ def test_recall_includes_what_the_component_depends_on(tmp_path):
     hints = recall(deps, "order-gateway")
     assert "reference-db" in hints["subjects"] and [h["memory_id"] for h in hints["hints"]] == [note.memory_id]
     assert recall(deps, "order-gateway-2")["subjects"] == ["order-gateway-2"]  # not a component: that subject only
+
+
+def test_recovery_follows_the_runbook_of_the_action():
+    """milestone-2 evidence: after a correct rollback the error rate was 0.1% while latency still drained (36 ms)."""
+    from incident_response.contracts import Reading
+    from incident_response.guards import healthy
+
+    draining = Reading(tick=141, latency_ms=36.2, error_rate=0.001)
+    assert healthy("order-gateway", draining, "rollback_change")  # reference-db-connections: errors below 1%
+    assert not healthy("order-gateway", draining, "restart_instance")  # order-gateway-latency: also below 20 ms
+    assert not healthy("order-gateway", draining)  # no action: the component's own health
+    assert not healthy("order-gateway", Reading(tick=141, latency_ms=5, error_rate=0.4), "rollback_change")

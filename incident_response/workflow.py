@@ -131,7 +131,7 @@ async def act(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, plan: Pla
 
 async def check_recovery(gateway: Gateway, deps: IncidentDeps, plan: Plan, known: dict) -> Outcome:
     action = f"{known['action']} {known['target']} ({known['action_id']}, approval {known.get('confirmation_ref')})"
-    recovered, refs, detail = await verify(gateway, deps, plan.finding.component, known["tick"])
+    recovered, refs, detail = await verify(gateway, deps, plan.finding.component, known["tick"], known["action"])
     if recovered:
         return Outcome("recovered", f"Recovery verified: {detail}.", [action], refs)
     return Outcome("not_recovered", f"The action completed but recovery was not verified: {detail}.", [action], refs)
