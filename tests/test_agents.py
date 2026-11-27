@@ -7,7 +7,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel
 
 from incident_response.agents import READ_BUDGET
@@ -25,6 +25,18 @@ def retried(messages):
     return any(isinstance(part, RetryPromptPart) for message in messages if isinstance(message, ModelRequest) for part in message.parts)
 
 
+def prompted(messages, text):
+    return any(isinstance(part, UserPromptPart) and text in str(part.content)
+               for message in messages if isinstance(message, ModelRequest) for part in message.parts)
+
+
+def since_correction(messages):
+    """The orchestrator's conversation after the latest correction request (all of it if there was none)."""
+    starts = [i for i, message in enumerate(messages) if isinstance(message, ModelRequest) and any(
+        isinstance(part, UserPromptPart) and "Correction needed" in str(part.content) for part in message.parts)]
+    return messages[starts[-1]:] if starts else messages
+
+
 def call(name, args):
     return ModelResponse(parts=[ToolCallPart(name, args)])
 
@@ -35,10 +47,10 @@ def answer(info, data):
 
 class Script:
     def __init__(self, fake_ref_once=False, reviewer_fails=False, act_without_review=False, reviewer_loops=False,
-                 triage_repeats=False, strays=False, follow_up=False):
+                 triage_repeats=False, strays=False, follow_up=False, wrong_target=False):
         self.fake_ref_once, self.reviewer_fails, self.act_without_review = fake_ref_once, reviewer_fails, act_without_review
         self.reviewer_loops, self.triage_repeats, self.strays = reviewer_loops, triage_repeats, strays
-        self.follow_up = follow_up
+        self.follow_up, self.wrong_target = follow_up, wrong_target
 
     async def __call__(self, messages, info):
         instructions, done = info.instructions or "", returns(messages)
@@ -65,6 +77,8 @@ class Script:
                                      "evidence": refs, "proposal": {"action": "none", "reason": "no fault"}})
             latest = done[0][1]["readings"][-1]["instances"]
             hot = next(name for name, values in latest.items() if values["memory_pct"] > 90)
+            if self.wrong_target and not prompted(messages, "Do not propose these again"):
+                hot = next(name for name in latest if name != hot)  # a cold instance: fresh evidence will refuse it
             evidence = ["T99"] if self.fake_ref_once and not retried(messages) else refs
             return answer(info, {"component": "order-gateway", "cause_kind": "instance_memory", "cause": f"{hot} memory high",
                                  "evidence": evidence, "proposal": {"action": "restart_instance", "target": hot, "reason": "runbook"}})
@@ -76,6 +90,7 @@ class Script:
             if not done:
                 return call("check_link", {"source": "order-gateway", "target": "reference-db"})
             return answer(info, {"safe_to_attempt": True, "constraints": ["one instance"], "evidence": refs})
+        done = returns(since_correction(messages))
         asked = [name for name, _ in done]
         if "ask_triage" not in asked:
             return call("ask_triage", {"question": "Which component and tickets?"})
@@ -192,3 +207,11 @@ def test_errors_finding_must_have_searched_the_logs_for_the_change():
     assert "CHG-0" in unsearched_change(seat, named)  # the change it names must be the one searched
     memory = finding.model_copy(update={"cause_kind": "instance_memory"})
     assert unsearched_change(seat, memory) is None
+
+
+def test_orchestrator_gets_one_correction_after_a_refusal(tmp_path):
+    report, state, effects = execute(tmp_path, Script(wrong_target=True))
+    assert report["status"] == "recovered" and [e["target"] for e in effects] == ["order-gateway-2"]
+    assert "above 90% memory" in report["refusals"][0] and report["summary"].startswith("First attempt (refused)")
+    assert len(state["model_messages"]["investigator"]) == 2  # asked again, fresh, told what not to propose
+    assert "Correction needed" in json.dumps(state["model_messages"]["orchestrator"])

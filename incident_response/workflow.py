@@ -1,9 +1,13 @@
-"""End to end: brief -> specialists -> decision -> authorize -> act -> verify -> record.
+"""End to end: brief -> specialists -> decision -> authorize -> act -> verify -> (one correction) -> record.
 
 The model never holds a mutation tool. After the coordinator decides, code checks authority,
 re-reads fresh evidence, asks for approval, acts once with an idempotency key, confirms the
 effect with the executor, and verifies recovery against the runbook criterion. The incident
 ticket is updated (or created) by code, idempotently, with the outcome.
+
+Correction (session 7): when policy refuses the proposal or recovery is not verified, the coordinator gets the
+reason and one attempt at a different mitigation, which is reviewed, authorized and verified again. Both attempts
+are in the report. A person's denial is never corrected around.
 
 Progress is checkpointed (checkpoint.json) and the simulated systems persist separately
 (world.pkl), so a paused run can be resumed in another process.
@@ -30,12 +34,13 @@ from .contracts import Plan, Report
 from .gateway import Gateway, ToolFailure, redact, require
 from .guards import evidence_refusal, verify
 from .memory import recall, remember
-from .policy import PolicyRefusal, approval_refusal, approver_role, authority_refusal
+from .policy import REMEDIATION_ROLES, PolicyRefusal, approval_refusal, approver_role, authority_refusal
 from .rules import RuleSpecialists
 from .state import Checkpoint
 from .world import create_world, load_world
 
 PAUSE_POINTS = ("plan", "action")
+MAX_CORRECTIONS = 1
 
 
 @dataclass
@@ -45,6 +50,7 @@ class Outcome:
     actions: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
     refusals: list[str] = field(default_factory=list)
+    correction: dict | None = None  # {"reason", "failed": [action, target]} when a correction may help
 
 
 class Paused(Exception):
@@ -99,7 +105,7 @@ async def act(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, plan: Pla
     finding, proposal = plan.finding, plan.finding.proposal
     denied = authority_refusal(deps, proposal)
     if denied:
-        raise PolicyRefusal(denied)
+        raise PolicyRefusal(denied, correctable=deps.identity["role"] in REMEDIATION_ROLES)
     key = f"{state.data['run_id']}:{proposal.action}:{proposal.target}"
     known = require(await gateway.call("action_status", idempotency_key=key))
     if known.get("status") != "completed":
@@ -115,7 +121,7 @@ async def act(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, plan: Pla
         state.set(approval=approval)
         denied = approval_refusal(deps, proposal, approval["approval_ref"])
         if denied:
-            raise PolicyRefusal(denied)
+            raise PolicyRefusal(denied, correctable=approval.get("status") != "denied")
         state.set(intent={"key": key, "action": proposal.action, "target": proposal.target, "approval_ref": approval["approval_ref"]})
         argument = "instance_id" if proposal.action == "restart_instance" else "change_id"
         await gateway.call(proposal.action, **{argument: proposal.target}, idempotency_key=key,
@@ -134,7 +140,38 @@ async def check_recovery(gateway: Gateway, deps: IncidentDeps, plan: Plan, known
     recovered, refs, detail = await verify(gateway, deps, plan.finding.component, known["tick"], known["action"])
     if recovered:
         return Outcome("recovered", f"Recovery verified: {detail}.", [action], refs)
-    return Outcome("not_recovered", f"The action completed but recovery was not verified: {detail}.", [action], refs)
+    return Outcome("not_recovered", f"The action completed but recovery was not verified: {detail}.", [action], refs,
+                   correction={"reason": f"{known['action']} {known['target']} completed but recovery was not verified: "
+                                         f"{detail}", "failed": [known["action"], known["target"]]})
+
+
+async def carry_out(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, plan: Plan, pause_after: str | None,
+                    approver: Approver | None) -> Outcome:
+    """One attempt at the plan's decision."""
+    try:
+        if state.data["phase"] == "acted":
+            return await check_recovery(gateway, deps, plan, state.data["action"])
+        if plan.decision.decision == "act":
+            return await act(gateway, deps, state, plan, pause_after, approver)
+        if plan.decision.decision == "no_action_needed":
+            healthy, refs, detail = await verify(gateway, deps, plan.finding.component, None)
+            return (Outcome("resolved", f"No action needed: {detail}.", [], refs) if healthy else
+                    Outcome("escalated", f"The investigator found no fault, but {detail}; escalate to on-call.", [], refs))
+        return Outcome("escalated", f"Escalated to on-call: {plan.decision.rationale}")
+    except PolicyRefusal as refusal:
+        proposal = plan.finding.proposal
+        return Outcome("refused", f"Refused before any effect: {refusal}", refusals=[str(refusal)],
+                       correction={"reason": f"Refused by policy: {refusal}", "failed": [proposal.action, proposal.target]}
+                       if refusal.correctable else None)
+
+
+def combined(attempts: list[dict], last: Outcome) -> Outcome:
+    """The report covers every attempt: what was tried, refused or done before the correction, and what followed."""
+    if not attempts:
+        return last
+    first = Outcome(**attempts[0]["outcome"])
+    return Outcome(last.status, f"First attempt ({first.status}): {first.summary} After one correction: {last.summary}",
+                   first.actions + last.actions, first.evidence + last.evidence, first.refusals + last.refusals)
 
 
 async def update_tickets(gateway: Gateway, state: Checkpoint, plan: Plan, report: Report) -> list[str]:
@@ -222,27 +259,31 @@ async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", 
             state.set(catalog=gateway.catalog)
             crew = Crew(gateway, deps, brief)
             coordinator = coordinator_for(crew, mode, coordination, model)
+            attempts: list[dict] = state.data.get("attempts", [])
+            if "plan" in state.data:  # resumed: the coordinator continues from what was already established
+                crew.correlation = Plan.model_validate(state.data["plan"]).correlation
+                crew.excluded = {tuple(attempt["outcome"]["correction"]["failed"]) for attempt in attempts}
             try:
                 if state.data["phase"] == "start":
                     plan = await coordinator.plan()
                     state.set(plan=plan.model_dump(), phase="planned")
                     if pause_after == "plan":
                         raise Paused("planned")
-                plan = Plan.model_validate(state.data["plan"])
-                if state.data["phase"] == "acted":
-                    outcome = await check_recovery(gateway, deps, plan, state.data["action"])
-                elif plan.decision.decision == "act":
-                    outcome = await act(gateway, deps, state, plan, pause_after, approver)
-                elif plan.decision.decision == "no_action_needed":
-                    healthy, refs, detail = await verify(gateway, deps, plan.finding.component, None)
-                    outcome = (Outcome("resolved", f"No action needed: {detail}.", [], refs) if healthy else
-                               Outcome("escalated", f"The investigator found no fault, but {detail}; escalate to on-call.", [], refs))
-                else:
-                    outcome = Outcome("escalated", f"Escalated to on-call: {plan.decision.rationale}")
-            except PolicyRefusal as refusal:
-                outcome = Outcome("refused", f"Refused before any effect: {refusal}", refusals=[str(refusal)])
+                if state.data["phase"] != "correcting":
+                    plan = Plan.model_validate(state.data["plan"])
+                    outcome = await carry_out(gateway, deps, state, plan, pause_after, approver)
+                    if outcome.correction and len(attempts) < MAX_CORRECTIONS:
+                        attempts.append({"plan": plan.model_dump(), "outcome": asdict(outcome)})
+                        state.set(attempts=attempts, phase="correcting")
+                if state.data["phase"] == "correcting":
+                    correction = attempts[-1]["outcome"]["correction"]
+                    plan = await coordinator.correct(correction["reason"], tuple(correction["failed"]))
+                    state.set(plan=plan.model_dump(), phase="planned")
+                    outcome = await carry_out(gateway, deps, state, plan, pause_after, approver)
+                outcome = combined(attempts, outcome)
             except (ToolFailure, ValidationError, AgentRunError, SpecialistFailure) as error:
                 outcome = Outcome("insufficient_information", f"Stopped in a controlled way: {type(error).__name__}: {error}")
+                outcome = combined(attempts, outcome)
             report = build_report(brief, plan, outcome, crew)
             if plan is not None:
                 notes = await update_tickets(gateway, state, plan, report)

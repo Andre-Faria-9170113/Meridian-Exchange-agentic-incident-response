@@ -19,7 +19,15 @@ REMEDIATION_ROLES = {"first-line", "on-call", "incident-manager"}
 
 
 class PolicyRefusal(Exception):
-    """An action was refused by policy (role, target, evidence or approval)."""
+    """An action was refused by policy (role, target, evidence or approval).
+
+    `correctable`: the proposal was the problem (a critical target, evidence that does not hold), so the coordinator
+    may propose something else once. Not when a person denied the approval, and not when the identity may not
+    remediate at all: a different proposal would not change either answer."""
+
+    def __init__(self, reason: str, correctable: bool = True):
+        super().__init__(reason)
+        self.correctable = correctable
 
 
 def facts(deps: IncidentDeps, proposal: Proposal, approval_ref: str | None = None) -> ActionRequest:

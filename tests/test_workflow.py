@@ -49,7 +49,7 @@ def test_unrelated_ticket_is_not_merged(tmp_path):
     assert not any(e["tool"] == "tickets.link_issues" for e in state(tmp_path)["events"])
 
 
-@pytest.mark.parametrize("case,status", [("approval-denied", "refused"), ("s02-hidden-config-change", "refused"),
+@pytest.mark.parametrize("case,status", [("approval-denied", "refused"), ("s02-hidden-config-change", "escalated"),
                                          ("s01-metrics-unavailable", "insufficient_information"),
                                          ("s01-market-data-delay", "escalated"), ("s04-conflicting-shift-notes", "escalated")])
 def test_controlled_outcomes_have_no_effects(tmp_path, case, status):
@@ -59,9 +59,36 @@ def test_controlled_outcomes_have_no_effects(tmp_path, case, status):
 
 
 def test_critical_change_is_named_but_not_rolled_back_by_first_line(tmp_path):
+    """The refusal goes back to the coordinator once; with the rollback excluded there is nothing left: escalate."""
     report = execute(tmp_path, "s02-hidden-config-change")
-    assert "CHG-4471" in report["root_cause"]
+    assert "CHG-4471" in report["root_cause"] and report["status"] == "escalated"
     assert any("critical component" in refusal for refusal in report["refusals"])
+    attempts = state(tmp_path)["attempts"]
+    assert len(attempts) == 1 and attempts[0]["outcome"]["correction"]["failed"] == ["rollback_change", "CHG-4471"]
+    assert report["summary"].startswith("First attempt (refused)")
+
+
+def test_a_person_s_denial_is_not_corrected_around(tmp_path):
+    assert execute(tmp_path, "approval-denied")["status"] == "refused"
+    assert "attempts" not in state(tmp_path) and len(state(tmp_path)["approvals"]) == 1
+
+
+def test_unverified_recovery_gets_one_correction_and_both_attempts_are_reported(tmp_path, monkeypatch):
+    import incident_response.workflow as workflow
+
+    real = workflow.verify
+
+    async def never_after_an_action(gateway, deps, component, after_tick, action=None):
+        if after_tick is None:
+            return await real(gateway, deps, component, after_tick, action)
+        return False, [], f"{component} did not meet the recovery criterion (simulated)"
+
+    monkeypatch.setattr(workflow, "verify", never_after_an_action)
+    report = execute(tmp_path, "s03-alert-and-ticket")
+    assert report["status"] == "escalated"  # the restart is excluded and the runbook has nothing else
+    assert report["actions_taken"][0].startswith("restart_instance order-gateway-2") and len(effects(tmp_path)) == 1
+    assert report["summary"].startswith("First attempt (not_recovered)")
+    assert state(tmp_path)["attempts"][0]["outcome"]["correction"]["failed"] == ["restart_instance", "order-gateway-2"]
 
 
 def test_retryable_failure_is_retried_once(tmp_path):
