@@ -47,15 +47,18 @@ def answer(info, data):
 
 class Script:
     def __init__(self, fake_ref_once=False, reviewer_fails=False, act_without_review=False, reviewer_loops=False,
-                 triage_repeats=False, strays=False, follow_up=False, wrong_target=False):
+                 triage_repeats=False, strays=False, follow_up=False, wrong_target=False, nags=False):
         self.fake_ref_once, self.reviewer_fails, self.act_without_review = fake_ref_once, reviewer_fails, act_without_review
         self.reviewer_loops, self.triage_repeats, self.strays = reviewer_loops, triage_repeats, strays
-        self.follow_up, self.wrong_target = follow_up, wrong_target
+        self.follow_up, self.wrong_target, self.nags = follow_up, wrong_target, nags
 
     async def __call__(self, messages, info):
         instructions, done = info.instructions or "", returns(messages)
         refs = [content["ref"] for _, content in done if isinstance(content, dict) and "ref" in content]
         if "You are the triage specialist" in instructions:
+            if prompted(messages[-1:], "status of reference-db"):  # a follow-up about another component
+                return answer(info, {"component": "reference-db", "incident_ticket": None, "related": [], "unrelated": [],
+                                     "reasoning": "asked about reference-db", "evidence": refs[:1]})
             if not done:
                 return call("monitoring_list_alerts", {"device": "order-gateway", "size": 20})
             if len(done) == 1 or (self.triage_repeats and len(done) == 2):
@@ -96,6 +99,11 @@ class Script:
             return call("ask_triage", {"question": "Which component and tickets?"})
         if "ask_investigator" not in asked:
             return call("ask_investigator", {"question": "Cause and proposal?"})
+        if self.nags and "ask_reviewer" in asked and not any("already asked" in str(c) for _, c in done):
+            # what gpt-4.1-mini did: ask about the reviewer's constraints again and again, triage included
+            if asked.count("ask_triage") == 1:
+                return call("ask_triage", {"question": "What is the status of reference-db?"})
+            return call("ask_investigator", {"question": "Are the links up and is the session open?"})
         if self.follow_up and asked.count("ask_investigator") == 1:
             return call("ask_investigator", {"question": "Are you sure about the instance?"})
         if self.act_without_review and not retried(messages):
@@ -251,3 +259,25 @@ def test_routing_adds_the_fallback_only_when_configured(monkeypatch):
     monkeypatch.setenv("OPENAI_FALLBACK_MODEL", "gpt-4.1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-used")
     assert isinstance(routed("openai:gpt-4.1-mini"), FallbackModel)
+
+
+def test_orchestrator_cannot_go_round_in_circles_or_lose_the_component(tmp_path):
+    report, state, effects = execute(tmp_path, Script(nags=True))
+    assert report["status"] == "recovered" and len(effects) == 1
+    assert state["plan"]["correlation"]["component"] == "order-gateway"  # the triage follow-up did not replace it
+    assert len(state["model_messages"]["investigator"]) == 2  # one answer and one follow-up, then refused
+    assert [c["reason"] for c in state["limited_calls"] if c["caller"] == "orchestrator"] == ["asked_again"]
+    assert "Triage established order-gateway" in json.dumps(state["model_messages"]["orchestrator"])
+    assert any(a["monitor"] == "circling" for a in state["monitors"]["alerts"])
+
+
+def test_a_corrected_investigator_starts_from_its_earlier_finding(tmp_path):
+    from incident_response.agents import CORRECTION_BUDGET
+
+    report, state, _ = execute(tmp_path, Script(wrong_target=True))
+    assert report["status"] == "recovered"
+    second = json.dumps(state["model_messages"]["investigator"][1])
+    assert "Your earlier finding" in second and "read_metrics" in second  # its finding and the digest of its evidence
+    boundary = state["attempts"][0]["events_before_correction"]
+    reads = [e for e in state["events"][boundary:] if e["caller"] == "investigator"]
+    assert 1 <= len(reads) <= CORRECTION_BUDGET

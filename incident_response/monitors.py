@@ -6,6 +6,8 @@ change nothing and decide nothing. They check, independently of the code that ac
 
 - repeated_work: no specialist ran the same read twice within one attempt (a correction re-reads on purpose:
   the world has moved on), and how often a repeat had to be refused (going round in circles);
+- circling: reads refused as outside the specialist's scope, a specialist asked more often than one answer and one
+  follow-up per round, and orchestrator questions refused for that reason;
 - approval: every applied action has an approved approval for exactly that action and target, still valid
   when the action ran (15 minutes, not across the session opening);
 - repeated_effect: no action was applied twice to the same target;
@@ -46,6 +48,16 @@ def watch(data: dict, trading_session=None) -> dict:
     for (caller, reason), count in sorted(limited.items()):
         if reason == "repeated":
             alert("repeated_work", "warning", f"{caller} tried {count} repeated call(s); refused without touching the systems")
+
+    for (caller, reason), count in sorted(limited.items()):
+        if reason == "scope":
+            alert("circling", "warning", f"{caller} tried {count} read(s) outside its scope; refused")
+        if reason == "asked_again":
+            alert("circling", "warning", f"{caller} asked a specialist again {count} time(s) past the limit; refused")
+    rounds = 1 + len(data.get("attempts", []))
+    for agent, answers in (data.get("model_messages") or {}).items():
+        if agent != "orchestrator" and isinstance(answers, list) and len(answers) > 2 * rounds:
+            alert("circling", "warning", f"{agent} answered {len(answers)} times in {rounds} round(s)")
 
     approvals = {record["approval_ref"]: record for record in data.get("approvals", [])}
     applied = [record for record in data.get("actions", []) if record.get("outcome") == "completed"]

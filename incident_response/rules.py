@@ -83,7 +83,8 @@ class RuleSpecialists:
                        f"symptoms and opened within {WINDOW_MINUTES} minutes: related. Other component or symptom: unrelated."),
             evidence=[alerts["ref"], issues["ref"]])
 
-    async def investigate(self, correlation: Correlation, excluded: set[tuple[str, str]] = frozenset(), note: str = "") -> Finding:
+    async def investigate(self, correlation: Correlation, excluded: set[tuple[str, str]] = frozenset(), note: str = "",
+                          previous: Finding | None = None) -> Finding:  # previous: the rules re-derive it
         component = correlation.component
         raw = require(await self.gateway.call("read_metrics", caller="investigator", component=component, window_ticks=5, per_instance=True))
         observed = Metrics.model_validate(raw)

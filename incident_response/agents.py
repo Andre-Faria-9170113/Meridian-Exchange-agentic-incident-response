@@ -125,6 +125,15 @@ If an answer is unclear or contradicts another specialist, ask one follow-up que
 # - reviewer: two dependency links, reference-db, trading session; a rollback adds "is the change still active".
 READ_BUDGET = {"triage": 3, "investigator": 7, "reviewer": 4}
 REVIEW_BUDGET = {"restart_instance": 4, "rollback_change": 5}
+# A corrected investigator starts from what it already found (its finding and a digest of the evidence) and re-reads
+# only what the correction needs. Starting from scratch re-read everything: about 20k more input tokens, over the s02
+# budget (milestone-3 evidence, s02-hidden-config-change).
+CORRECTION_BUDGET = 4
+DIGEST_CHARS = 300
+# Answers one specialist may give in one orchestration round: the first and one follow-up. gpt-4.1-mini read the
+# reviewer's constraints as open questions and asked the investigator and triage again and again until the team's
+# request limit (milestone-3 evidence, s04-recurring-leak-day2 r2).
+MAX_ANSWERS = 2
 
 
 @dataclass
@@ -330,6 +339,7 @@ class Crew:
     finding: Finding | None = None
     review: Review | None = None
     reviewed: Finding | None = None  # the exact finding the current review refers to
+    previous: Finding | None = None  # the finding a correction replaces
     excluded: set[tuple[str, str]] = field(default_factory=set)
     note: str = ""
     failures: list[str] = field(default_factory=list)
@@ -385,17 +395,36 @@ class LLMSpecialists:
     async def triage(self, question: str = "") -> Correlation:
         return await self._ask("triage", f"{self._incident()}\n\n{question}".strip(), subject="incident")
 
-    async def investigate(self, correlation: Correlation, excluded: set[tuple[str, str]], note: str, question: str = "") -> Finding:
+    def _digest(self, finding: Finding) -> str:
+        """What the earlier finding rested on, one short line per cited ref (selected context, not the full results)."""
+        lines = []
+        for ref in finding.evidence:
+            event = next((e for e in self.crew.gateway.checkpoint.data["events"] if e["ref"] == ref), None)
+            if event and "result" in event:
+                result = {key: value for key, value in event["result"].items() if key != "ref"}
+                lines.append(f"- {ref} {event['tool']} {json.dumps(event['args'])}: "
+                             f"{json.dumps(result, default=str)[:DIGEST_CHARS]}")
+        return "\n".join(lines)
+
+    async def investigate(self, correlation: Correlation, excluded: set[tuple[str, str]], note: str, question: str = "",
+                          previous: Finding | None = None) -> Finding:
         parts = [self._incident(), f"Triage: {correlation.model_dump_json()}"]
         if excluded:
             parts.append("Do not propose these again (refused or already tried without recovery): "
                          + ", ".join(f"{action} {target}" for action, target in sorted(excluded)))
+        budget = None
         if note:
             parts.append(f"Why a correction is needed: {note}")
+            if previous is not None:
+                budget = CORRECTION_BUDGET
+                parts.append(f"Your earlier finding: {previous.model_dump_json()}\nWhat it rested on (you may cite these "
+                             f"refs again):\n{self._digest(previous)}\nDo not repeat that work. The systems have moved on: "
+                             f"re-read the component's metrics, then read only what the correction needs "
+                             f"({CORRECTION_BUDGET} reads).")
         if question:
             parts.append(question)
         subject = json.dumps([correlation.model_dump(), sorted(excluded), note], default=str)
-        return await self._ask("investigator", "\n\n".join(parts), subject, scope=correlation.component)
+        return await self._ask("investigator", "\n\n".join(parts), subject, scope=correlation.component, budget=budget)
 
     async def review(self, finding: Finding, question: str = "") -> Review:
         parts = [self._incident(), f"Proposal to review (exact): {finding.model_dump_json()}"]
@@ -425,7 +454,8 @@ class Pipeline:
         crew = self.crew
         if crew.correlation is None:
             crew.correlation = await self.specialists.triage()
-        crew.finding = await self.specialists.investigate(crew.correlation, crew.excluded, crew.note)
+        crew.finding = await self.specialists.investigate(crew.correlation, crew.excluded, crew.note,
+                                                          previous=crew.previous)
         if crew.finding.proposal.action != "none":
             crew.review, crew.reviewed = await self.specialists.review(crew.finding), crew.finding
         return crew.plan(decide(crew.finding, crew.review if crew.reviewed == crew.finding else None))
@@ -433,41 +463,62 @@ class Pipeline:
     async def correct(self, reason: str, failed: tuple[str, str]) -> Plan:
         self.crew.excluded.add(failed)
         self.crew.note = reason
+        self.crew.previous = self.crew.finding or self.crew.previous
         if isinstance(self.specialists, LLMSpecialists):
             self.specialists.forget_sessions()
         return await self.plan()
 
 
 async def ask_triage(ctx: RunContext[Orchestration], question: str) -> dict:
-    """Ask the triage specialist which component and which tickets this incident involves. It changes nothing."""
+    """Ask the triage specialist which component and which tickets this incident involves (alerts and tickets only;
+    it does not read metrics, links or the trading session). It changes nothing."""
     return await ctx.deps.delegate("triage", question)
 
 
 async def ask_investigator(ctx: RunContext[Orchestration], question: str) -> dict:
-    """Ask the investigator for the cause and at most one runbook mitigation. Ask triage first. It changes nothing."""
+    """Ask the investigator for the cause and at most one runbook mitigation (the component's metrics, runbooks,
+    changes and logs; not dependency links or the trading session). Ask triage first. It changes nothing."""
     return await ctx.deps.delegate("investigator", question)
 
 
 async def ask_reviewer(ctx: RunContext[Orchestration], question: str) -> dict:
-    """Ask the reviewer to check the investigator's current proposal (sent to it exactly). It changes nothing."""
+    """Ask the reviewer to check the investigator's current proposal (sent to it exactly): dependency links,
+    reference-db and the trading session. Its constraints are conditions it checked or that code enforces before
+    acting (authority, fresh evidence, approval), not questions for other specialists. It changes nothing."""
     return await ctx.deps.delegate("reviewer", question)
 
 
 @dataclass
 class Orchestration:
+    """One orchestration round (the first plan, or a correction): the specialists as the orchestrator's tools."""
+
     crew: Crew
     specialists: LLMSpecialists
+    answers: dict[str, int] = field(default_factory=dict)
 
     async def delegate(self, who: str, question: str) -> dict:
         crew = self.crew
+        if self.answers.get(who, 0) >= MAX_ANSWERS:
+            self.crew.gateway.checkpoint.data.setdefault("limited_calls", []).append(
+                {"caller": "orchestrator", "tool": f"ask_{who}", "args": {"question": question[:200]}, "reason": "asked_again"})
+            return {"error": f"You already asked the {who} {MAX_ANSWERS} times in this round. Decide with the results "
+                             "you have; escalate if they are not enough. Code re-checks authority, fresh evidence, "
+                             "dependency links and approval before any action."}
+        self.answers[who] = self.answers.get(who, 0) + 1
         try:
             if who == "triage":
-                crew.correlation = await self.specialists.triage(question)
+                answer = await self.specialists.triage(question)
+                if crew.correlation is not None and answer.component != crew.correlation.component:
+                    # a follow-up about another component must not replace the incident's (a fact lost between steps)
+                    return {**crew.correlation.model_dump(), "note": f"Triage established {crew.correlation.component} "
+                            f"for this incident; that stands. The follow-up answer was about {answer.component}."}
+                crew.correlation = answer
                 return crew.correlation.model_dump()
             if crew.correlation is None:
                 return {"error": "Ask triage first."}
             if who == "investigator":
-                crew.finding = await self.specialists.investigate(crew.correlation, crew.excluded, crew.note, question)
+                crew.finding = await self.specialists.investigate(crew.correlation, crew.excluded, crew.note, question,
+                                                                  previous=crew.previous)
                 return crew.finding.model_dump()
             if crew.finding is None or crew.finding.proposal.action == "none":
                 return {"error": "There is no proposed action to review."}
@@ -525,6 +576,7 @@ class Orchestrator:
     async def correct(self, reason: str, failed: tuple[str, str]) -> Plan:
         self.crew.excluded.add(failed)
         self.crew.note = reason
+        self.crew.previous = self.crew.finding or self.crew.previous
         self.specialists.forget_sessions()
         return await self._run(f"Correction needed: {failed[0]} {failed[1]} cannot be used. Reason: {reason}\n"
                                "Ask the investigator for a different mitigation within authority (it will be told what "

@@ -338,6 +338,8 @@ async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", 
             if "plan" in state.data:  # resumed: the coordinator continues from what was already established
                 crew.correlation = Plan.model_validate(state.data["plan"]).correlation
                 crew.excluded = {tuple(attempt["outcome"]["correction"]["failed"]) for attempt in attempts}
+                if attempts:
+                    crew.previous = Plan.model_validate(attempts[-1]["plan"]).finding
             try:
                 if state.data["phase"] == "start":
                     plan = await coordinator.plan()
