@@ -39,6 +39,7 @@ def test_multi_source_incident_is_correlated_recovered_and_recorded(tmp_path):
     calls = [e["tool"] for e in state(tmp_path)["events"]]
     assert calls.count("tickets.add_comment") == 1 and "tickets.create_issue" not in calls
     assert "tickets.link_issues" not in calls  # MEM-1187 was already linked: no duplicate link
+    assert state(tmp_path)["monitors"]["counts"] == {"critical": 0, "warning": 0}
 
 
 def test_unrelated_ticket_is_not_merged(tmp_path):

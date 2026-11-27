@@ -1,5 +1,6 @@
 """Policy, gateway and memory boundaries, tested directly."""
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -132,3 +133,24 @@ def test_recovery_follows_the_runbook_of_the_action():
     assert not healthy("order-gateway", draining, "restart_instance")  # order-gateway-latency: also below 20 ms
     assert not healthy("order-gateway", draining)  # no action: the component's own health
     assert not healthy("order-gateway", Reading(tick=141, latency_ms=5, error_rate=0.4), "rollback_change")
+
+
+def test_monitors_flag_silent_failures_in_a_journal():
+    from incident_response.monitors import watch
+
+    read = {"caller": "investigator", "tool": "read_metrics", "args": {"component": "order-gateway"}, "attempt": 1, "result": {}}
+    restart = {"caller": "harness", "tool": "restart_instance", "args": {}, "attempt": 1, "result": {}}
+    action = {"action_id": "ACT-001", "action": "restart_instance", "target": "order-gateway-2", "outcome": "completed",
+              "tick": 40, "confirmation_ref": "APR-001"}
+    approval = {"approval_ref": "APR-001", "action": "restart_instance", "target": "order-gateway-2", "status": "approved",
+                "tick": 20}
+    data = {"events": [read, read, restart], "actions": [action, action], "approvals": [approval],
+            "limited_calls": [{"caller": "triage", "reason": "repeated"}], "report": {"status": "recovered"},
+            "usage": {"requests": 39, "input_tokens": 1000, "output_tokens": 10}}
+    found = {(a["monitor"], a["severity"]) for a in watch(data)["alerts"]}
+    assert found == {("repeated_work", "warning"), ("approval", "critical"), ("repeated_effect", "critical"),
+                     ("unverified_claim", "critical"), ("budget", "warning")}
+    assert "given 20 minutes earlier" in json.dumps(watch(data))
+    clean = {**data, "events": [read, restart, {**read, "caller": "harness"}], "actions": [{**action, "tick": 30}],
+             "limited_calls": [], "usage": {}}
+    assert watch(clean)["alerts"] == []

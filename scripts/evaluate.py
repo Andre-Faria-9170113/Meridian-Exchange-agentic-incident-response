@@ -92,7 +92,9 @@ async def run_case(case: str, directory: Path, memory_path: Path, args) -> dict:
     else:
         effects, tool_calls = [], 0
     passed = error is None and bool(checks) and all(check["passed"] for check in checks)
-    return {"case": case, "passed": passed, "status": report.get("status"), "effects": effects,
+    monitors = state.get("monitors") or {}
+    return {"monitors": monitors.get("counts", {}), "monitor_alerts": monitors.get("alerts", []),
+            "corrections": len(state.get("attempts", [])), "case": case, "passed": passed, "status": report.get("status"), "effects": effects,
             "failed_checks": [f"{c['name']}: {c['detail']}" for c in checks if not c["passed"]], "checks": checks,
             "error": error, "tool_calls": tool_calls, "model_requests": usage.get("requests", 0),
             "input_tokens": usage.get("input_tokens", 0), "output_tokens": usage.get("output_tokens", 0),
@@ -112,7 +114,8 @@ async def evaluate_suite(args) -> dict:
                 mark = "PASS" if row["passed"] else "FAIL"
                 print(f"[{mark}] {case} r{repetition}: status={row['status']} effects={row['effects']}"
                       + (f" | {'; '.join(row['failed_checks'])[:200]}" if row["failed_checks"] else "")
-                      + (f" | {row['error']}" if row["error"] else ""), flush=True)
+                      + (f" | {row['error']}" if row["error"] else "")
+                      + "".join(f" | monitor {a['severity']}: {a['detail']}" for a in row["monitor_alerts"]), flush=True)
     return {"meta": {"git_revision": git_revision(), "version": __version__, "mode": args.mode,
                      "model": args.model if args.mode == "llm" else "none (deterministic fixture)",
                      "coordination": args.coordination if args.mode == "llm" else "pipeline (deterministic rules)",
@@ -124,12 +127,16 @@ async def evaluate_suite(args) -> dict:
 def summarize(results: dict) -> dict[str, dict]:
     by_case: dict[str, dict] = {}
     for row in results["rows"]:
-        entry = by_case.setdefault(row["case"], {"runs": 0, "passed": 0, "statuses": [], "tokens": 0, "requests": 0})
+        entry = by_case.setdefault(row["case"], {"runs": 0, "passed": 0, "statuses": [], "tokens": 0, "requests": 0,
+                                                  "critical": 0, "warning": 0, "corrections": 0})
         entry["runs"] += 1
         entry["passed"] += row["passed"]
         entry["statuses"].append(row["status"])
         entry["tokens"] += row["input_tokens"] + row["output_tokens"]
         entry["requests"] += row["model_requests"]
+        for key in ("critical", "warning"):
+            entry[key] += (row.get("monitors") or {}).get(key, 0)
+        entry["corrections"] += row.get("corrections", 0)
     return by_case
 
 
@@ -140,14 +147,18 @@ def markdown(results: dict) -> str:
     lines = [f"# Evaluation — {meta['git_revision']} ({meta['mode']})", "",
              f"Model: {meta['model']} · coordination: {coordination_of(meta)} · "
              f"repetitions: {meta['repeat']} · Python {meta['python']} · {meta['date']}", "",
-             f"**{total_passed}/{total_runs} runs passed every check.**", "",
-             "| Case | Passed | Statuses | Model requests | Tokens | Failed checks (first run that failed) |",
-             "|---|---|---|---|---|---|"]
+             f"**{total_passed}/{total_runs} runs passed every check.** Monitors: "
+             f"{sum(e['critical'] for e in by_case.values())} critical, {sum(e['warning'] for e in by_case.values())} "
+             "warning alerts (see `monitor_alerts` in results.json).", "",
+             "| Case | Passed | Statuses | Model requests | Tokens | Corrections | Monitor alerts (critical/warning) "
+             "| Failed checks (first run that failed) |",
+             "|---|---|---|---|---|---|---|---|"]
     for case, entry in sorted(by_case.items()):
         failed = next((row["failed_checks"] or [row["error"]] for row in results["rows"] if row["case"] == case and not row["passed"]), [])
         failed_text = "; ".join(str(item) for item in failed).replace("|", "\\|")[:180]
         lines.append(f"| {case} | {entry['passed']}/{entry['runs']} | {', '.join(sorted(set(map(str, entry['statuses']))))} "
-                     f"| {entry['requests']} | {entry['tokens']} | {failed_text} |")
+                     f"| {entry['requests']} | {entry['tokens']} | {entry['corrections']} "
+                     f"| {entry['critical']}/{entry['warning']} | {failed_text} |")
     return "\n".join(lines) + "\n"
 
 

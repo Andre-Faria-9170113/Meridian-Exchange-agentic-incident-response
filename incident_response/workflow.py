@@ -37,6 +37,7 @@ from .contracts import Plan, Report
 from .gateway import Gateway, ToolFailure, redact, require
 from .guards import evidence_refusal, verify
 from .memory import recall, remember
+from .monitors import watch
 from .policy import REMEDIATION_ROLES, PolicyRefusal, approval_refusal, approver_role, authority_refusal
 from .rules import RuleSpecialists
 from .state import Checkpoint
@@ -328,7 +329,8 @@ async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", 
                     plan = Plan.model_validate(state.data["plan"])
                     outcome = await carry_out(gateway, deps, state, plan, pause_after, approver, crash_at)
                     if outcome.correction and len(attempts) < MAX_CORRECTIONS:
-                        attempts.append({"plan": plan.model_dump(), "outcome": asdict(outcome)})
+                        attempts.append({"plan": plan.model_dump(), "outcome": asdict(outcome),
+                                         "events_before_correction": len(state.data["events"])})
                         state.set(attempts=attempts, phase="correcting")
                 if state.data["phase"] == "correcting":
                     correction = attempts[-1]["outcome"]["correction"]
@@ -355,6 +357,7 @@ async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", 
     record_usage(state, crew)
     state.set(phase="done", report=report.model_dump(), trace=redact([asdict(call) for call in tools.trace]),
               actions=[record.public() for record in tools.sim.executor.audit], approvals=tools.sim.approvals)
+    state.set(monitors=watch(state.data, tools.sim.clock.is_trading_session))
     (directory / "report.json").write_text(report.model_dump_json(indent=2), encoding="utf-8")
     return report.model_dump()
 
