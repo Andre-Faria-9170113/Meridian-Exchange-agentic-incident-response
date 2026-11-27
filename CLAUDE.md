@@ -254,7 +254,17 @@ What remains: the real-model evidence and the tag.
    - Tag `milestone-3`.
 4. **Docs**, written in the project's voice for the evaluator:
    - The final README.
-   - `docs/ARCHITECTURE.md`: decisions, policies and trace excerpts.
+   - `docs/ARCHITECTURE.md`: decisions, policies and trace excerpts. Include a "Routing and fallback" section
+     (session 9):
+     - three routes: the fixture (no model), `OPENAI_MODEL`, and `OPENAI_FALLBACK_MODEL`, which answers only after an
+       API failure;
+     - plan B passes the same validators, budgets, permissions and policy, and if both models fail the run escalates;
+     - `models_used` in the checkpoint shows which model answered each agent.
+
+     The README gets one line saying the variable is optional. In the demo, show the free test
+     (`test_fallback_model_answers_when_the_primary_fails_and_the_same_rules_apply`). A live check with an
+     unknown `OPENAI_MODEL` needs the user's OK, and it is not yet confirmed that "model not found" triggers the
+     fallback.
    - `docs/EVALUATION.md`: cases, expected versus obtained, comparisons, model and version, limits.
    - `docs/DEMO.md`: a 10-minute demo script.
    - `docs/PROPOSAL.md`: problem, user, flow and diagram.
