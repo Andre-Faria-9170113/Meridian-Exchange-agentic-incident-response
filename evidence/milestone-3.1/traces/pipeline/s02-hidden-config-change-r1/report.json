@@ -1,0 +1,17 @@
+{
+  "incident_id": "INC-2102",
+  "status": "escalated",
+  "root_cause": "The order-gateway is experiencing high error rate (30%) with HTTP 503 errors due to database connection rejections by reference-db. The recent configuration change CHG-4471 on reference-db drastically lowered max_connections from 500 to 60, causing connection rejections visible in logs linked to the error rate rise.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T16",
+    "T18",
+    "T19"
+  ],
+  "actions_taken": [],
+  "refusals": [
+    "first-line may not rollback_change on reference-db: it is a critical component (escalate to on-call)"
+  ],
+  "summary": "First attempt (refused): Refused before any effect: first-line may not rollback_change on reference-db: it is a critical component (escalate to on-call) After one correction: Escalated to on-call: No safe action within the runbooks: Rollback of CHG-4471 is refused by policy as it affects a critical component (reference-db). Action escalation to on-call is needed."
+}

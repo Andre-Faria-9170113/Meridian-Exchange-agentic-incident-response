@@ -1,0 +1,14 @@
+{
+  "incident_id": "INC-2104",
+  "status": "escalated",
+  "root_cause": "Host firewall rule update (CHG-4490) denies egress from order-gateway to the reference-db on port 5432, breaking a critical dependency.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T08",
+    "T10"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: No safe action within the runbooks: The incident is caused by change CHG-4490, but rollback is not proposed because no authorization or safety check for rollback is confirmed in the runbook or logs."
+}

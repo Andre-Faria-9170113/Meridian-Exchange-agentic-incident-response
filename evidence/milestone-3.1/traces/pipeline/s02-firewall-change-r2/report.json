@@ -1,0 +1,26 @@
+{
+  "incident_id": "INC-2104",
+  "status": "recovered",
+  "root_cause": "Several connection refused errors to reference-db:5432 in order-gateway logs indicate a broken dependency on reference-db, confirmed by a recent change CHG-4490 that updated firewall rules denying egress to reference-db from order-gateway.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09",
+    "T10",
+    "T11",
+    "T12",
+    "T13",
+    "T14",
+    "T15",
+    "metrics/order-gateway/142",
+    "metrics/order-gateway/143"
+  ],
+  "actions_taken": [
+    "rollback_change CHG-4490 (ACT-001, approval APR-001)"
+  ],
+  "refusals": [],
+  "summary": "Recovery verified: order-gateway healthy in 3 consecutive readings (metrics/order-gateway/143)."
+}

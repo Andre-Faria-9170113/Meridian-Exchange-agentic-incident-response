@@ -1,0 +1,17 @@
+{
+  "incident_id": "INC-4102",
+  "status": "escalated",
+  "root_cause": "The error rate of order-gateway is very high at 30.1% with latency around 7.5 ms. The metrics per instance show normal memory usage (55%) so instance memory is not the cause. There are no detected broken dependencies from the available data, but a very high error rate with HTTP 503 suggests a problem potentially linked to recent changes. The recent deployment of order-gateway version 2.4.0 (CHG-4310) involved connection pooling changes. No error log lines mention this change, so a direct rollback cannot be confirmed, but the timing and symptoms make CHG-4310 the suspected cause.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T01",
+    "T04",
+    "T05",
+    "T06",
+    "T08"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: Investigator suspects the recent change CHG-4310 as the cause but does not propose an immediate mitigation due to insufficient evidence. Since the incident involves high error rates and HTTP 503 rejections affecting orders, escalation is required for further investigation and resolution."
+}

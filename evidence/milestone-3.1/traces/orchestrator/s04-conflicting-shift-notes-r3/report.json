@@ -1,0 +1,15 @@
+{
+  "incident_id": "INC-4102",
+  "status": "escalated",
+  "root_cause": "The high error rate (30.1%) and HTTP 503 errors in order-gateway are caused by database connection rejection errors reported in order-gateway logs. This indicates a problem in the reference-db dependency that order-gateway depends on. Recent changes include tuning reference-db connection settings and a deploy of order-gateway 2.4.0 a day before, but logs do not tie the problem directly to the order-gateway change. The rejection errors strongly suggest a dependency issue with reference-db connections.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T08",
+    "T09"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: The investigator identified the cause in the reference-db dependency, with no direct fault in order-gateway and no action proposed on order-gateway. However, since mitigation involves another critical component, escalation is required for further handling and resolution."
+}

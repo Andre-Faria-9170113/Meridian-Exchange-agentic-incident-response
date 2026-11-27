@@ -1,0 +1,16 @@
+{
+  "incident_id": "INC-2104",
+  "status": "escalated",
+  "root_cause": "Host firewall rule FW-221 applied by change CHG-4490 denies egress from order-gateway-1 to reference-db:5432, likely causing HTTP 503 errors due to failed dependency communication.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: The investigator found a fault (firewall blocking critical dependency traffic) but did not propose an immediate corrective action, only advised investigation. This requires escalation to resolve the dependency issue causing HTTP 503 errors at order-gateway."
+}

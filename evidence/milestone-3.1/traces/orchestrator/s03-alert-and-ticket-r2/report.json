@@ -1,0 +1,25 @@
+{
+  "incident_id": "INC-3101",
+  "status": "recovered",
+  "root_cause": "Instance order-gateway-2 has memory usage above 90%, causing high latency and garbage collection pauses as seen in logs.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [
+    "MRX-2210"
+  ],
+  "evidence": [
+    "T04",
+    "T06",
+    "T09",
+    "T10",
+    "T11",
+    "T12",
+    "T13",
+    "metrics/order-gateway/41",
+    "metrics/order-gateway/42"
+  ],
+  "actions_taken": [
+    "restart_instance order-gateway-2 (ACT-001, approval APR-001)"
+  ],
+  "refusals": [],
+  "summary": "Recovery verified: order-gateway healthy in 3 consecutive readings (metrics/order-gateway/42)."
+}
