@@ -2,11 +2,12 @@
 
     python -m incident_response run --scenario cases/s03-alert-and-ticket.yaml --run-dir runs/demo
     python -m incident_response run --mode llm --scenario ... --run-dir ...
-    python -m incident_response resume --run-dir runs/demo [--role on-call]
+    python -m incident_response resume --run-dir runs/demo [--role on-call] [--downtime 20]
+    python -m incident_response run ... --crash-at approval|action|verify   (then resume)
     python -m incident_response memory --memory runs/memory.db list|correct|forget ...
 
 Exit codes: 0 recovered, resolved or paused; 2 escalated, refused, not recovered or insufficient
-information (often the correct outcome of a failure case).
+information (often the correct outcome of a failure case); 3 the process crashed (--crash-at).
 """
 from __future__ import annotations
 
@@ -24,7 +25,7 @@ from meridian.agent_runtime import identity_for
 from meridian.memory import MemoryStore
 
 from .memory import correct, forget, store_clock
-from .workflow import PAUSE_POINTS, run
+from .workflow import CRASH_POINTS, PAUSE_POINTS, Crash, run
 
 ROLES = ["first-line", "on-call", "incident-manager", "settlement-analyst"]
 ROOT = Path(__file__).resolve().parents[1]
@@ -102,11 +103,15 @@ def main() -> None:
     start.add_argument("--pause-after", choices=PAUSE_POINTS)
     start.add_argument("--memory", type=Path, help="Memory SQLite file (default: <run-dir parent>/memory.db)")
     start.add_argument("--approver", choices=APPROVERS, default="scenario", help=APPROVER_HELP)
+    start.add_argument("--crash-at", choices=CRASH_POINTS,
+                       help="Die after the systems recorded this step and before the checkpoint did (then resume)")
 
     again = commands.add_parser("resume", help="Continue a paused or interrupted run")
     again.add_argument("--run-dir", type=Path, required=True)
     again.add_argument("--role", choices=ROLES, help="Act as another identity from now on (authority is re-checked)")
     again.add_argument("--approver", choices=APPROVERS, default="scenario", help=APPROVER_HELP)
+    again.add_argument("--downtime", type=int, default=0, metavar="MIN",
+                       help="Simulated minutes that passed while nobody worked (the systems keep running)")
 
     memory = commands.add_parser("memory", help="Operator commands on the memory store (between runs)")
     memory.add_argument("--memory", type=Path, required=True, help="Memory SQLite file, e.g. runs/memory.db")
@@ -134,17 +139,25 @@ def main() -> None:
     approver = terminal_approver if args.approver == "interactive" else None
     if approver and not sys.stdin.isatty():
         parser.error("--approver interactive needs a terminal")
-    if args.command == "run":
-        if args.mode == "llm" and not os.getenv("OPENAI_API_KEY"):
-            parser.error("OPENAI_API_KEY is missing; copy .env.example to .env and set it")
-        result = asyncio.run(run(args.scenario, args.run_dir, mode=args.mode, model=model_name(),
-                                 coordination=args.coordination, role=args.role, pause_after=args.pause_after,
-                                 memory_path=args.memory, approver=approver))
-    else:
-        saved = json.loads((args.run_dir / "checkpoint.json").read_text(encoding="utf-8"))
-        if saved["mode"] == "llm" and not os.getenv("OPENAI_API_KEY"):
-            parser.error("OPENAI_API_KEY is missing; this run uses a model")
-        result = asyncio.run(run(None, args.run_dir, model=saved["model"], resume=True, role=args.role, approver=approver))
+    try:
+        if args.command == "run":
+            if args.mode == "llm" and not os.getenv("OPENAI_API_KEY"):
+                parser.error("OPENAI_API_KEY is missing; copy .env.example to .env and set it")
+            result = asyncio.run(run(args.scenario, args.run_dir, mode=args.mode, model=model_name(),
+                                     coordination=args.coordination, role=args.role, pause_after=args.pause_after,
+                                     memory_path=args.memory, approver=approver, crash_at=args.crash_at))
+        else:
+            if args.downtime < 0:
+                parser.error("--downtime must not be negative")
+            saved = json.loads((args.run_dir / "checkpoint.json").read_text(encoding="utf-8"))
+            if saved["mode"] == "llm" and not os.getenv("OPENAI_API_KEY"):
+                parser.error("OPENAI_API_KEY is missing; this run uses a model")
+            result = asyncio.run(run(None, args.run_dir, model=saved["model"], resume=True, role=args.role,
+                                     approver=approver, downtime=args.downtime))
+    except Crash as crash:
+        print(f"CRASHED: {crash}. Resume with: python -m incident_response resume --run-dir {args.run_dir}",
+              file=sys.stderr)
+        raise SystemExit(3) from None
     print(json.dumps(result, indent=2))
     if result["status"] not in {"recovered", "resolved", "paused"}:
         raise SystemExit(2)

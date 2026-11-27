@@ -7,6 +7,8 @@ Policy (stricter than the simulator's minimum):
 - on-call and incident-manager may also act on critical components (matching-engine, reference-db).
 - Every action needs a matching approval. On a critical component during the trading session the
   approver must be the incident manager; otherwise the on-call engineer approves.
+- An approval is valid for 15 minutes, and not at all once the trading session has opened if it was given
+  before (session 8 lab). After an interruption a saved approval is reused only while it is still valid.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ from meridian.security import ActionRequest, describe_action
 from .contracts import Proposal
 
 REMEDIATION_ROLES = {"first-line", "on-call", "incident-manager"}
+APPROVAL_TTL_MINUTES = 15
 
 
 class PolicyRefusal(Exception):
@@ -64,4 +67,18 @@ def approval_refusal(deps: IncidentDeps, proposal: Proposal, approval_ref: str |
         return f"{approval_ref} was {request.approval_status} by the {request.approver_role}"
     if request.critical and request.trading_session and request.approver_role != "incident-manager":
         return "Critical actions during the trading session need the incident manager's approval"
+    return validity_refusal(deps, approval_ref)
+
+
+def validity_refusal(deps: IncidentDeps, approval_ref: str) -> str | None:
+    """Is this approval still valid now? It ages with the simulated clock: a crash and downtime age it too."""
+    record = next((item for item in deps.sim.approvals if item["approval_ref"] == approval_ref), None)
+    if record is None:
+        return f"{approval_ref} is not known to the approval service"
+    clock, now = deps.sim.clock, deps.sim.state.tick
+    age = (now - record["tick"]) * clock.minutes_per_tick
+    if age > APPROVAL_TTL_MINUTES:
+        return f"{approval_ref} expired: given at {record['time']}, {age} minutes ago (valid for {APPROVAL_TTL_MINUTES})"
+    if clock.is_trading_session(now) and not clock.is_trading_session(record["tick"]):
+        return f"{approval_ref} was given at {record['time']}, before the trading session opened"
     return None

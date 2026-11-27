@@ -10,7 +10,9 @@ reason and one attempt at a different mitigation, which is reviewed, authorized 
 are in the report. A person's denial is never corrected around.
 
 Progress is checkpointed (checkpoint.json) and the simulated systems persist separately
-(world.pkl), so a paused run can be resumed in another process.
+(world.pkl), so a paused or crashed run can be resumed in another process. On resume the systems'
+history decides (session 8): the executor's status for the idempotency key says whether the action
+ran, and the approval service says whether an approval was given and whether it is still valid.
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 from pydantic_ai.exceptions import AgentRunError
+from pydantic_ai.usage import RunUsage
 
 from meridian.agent_runtime import IncidentDeps, identity_for
 from meridian.memory import MemoryStore
@@ -40,6 +43,7 @@ from .state import Checkpoint
 from .world import create_world, load_world
 
 PAUSE_POINTS = ("plan", "action")
+CRASH_POINTS = ("approval", "action", "verify")
 MAX_CORRECTIONS = 1
 
 
@@ -57,6 +61,22 @@ class Paused(Exception):
     def __init__(self, phase: str):
         super().__init__(phase)
         self.phase = phase
+
+
+class Crash(BaseException):
+    """The process dies (a test and demo hook, `run --crash-at`). Raised after the systems saved the step and before
+    the checkpoint records it, so the checkpoint is behind. A BaseException: no `except Exception` in the run can
+    swallow it, and nothing is written on the way out."""
+
+
+def crash_if(point: str, crash_at: str | None) -> None:
+    if point == crash_at:
+        raise Crash(f"simulated crash at {point}: the systems recorded it, the checkpoint did not")
+
+
+def note(state: Checkpoint, kind: str, **details: Any) -> None:
+    """What resume found and decided, for the trace."""
+    state.set(resume_log=state.data.get("resume_log", []) + [{"kind": kind, **details}])
 
 
 def coordinator_for(crew: Crew, mode: str, coordination: str, model: Any):
@@ -99,8 +119,32 @@ async def ask_person(gateway: Gateway, deps: IncidentDeps, plan: Plan, role: str
     return {**approval, "answered_by": "person at the terminal"}
 
 
+async def obtain_approval(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, plan: Plan, role: str,
+                          approver: Approver | None) -> dict:
+    """Reuse the approval the approval service already holds for exactly this action and target while it is valid
+    (after a crash the checkpoint may not know it was given); a denial stands; otherwise ask."""
+    finding, proposal = plan.finding, plan.finding.proposal
+    earlier = [record for record in deps.sim.approvals
+               if record["action"] == proposal.action and record["target"] == proposal.target]
+    if earlier:
+        record = dict(earlier[-1])
+        if record["status"] != "approved":
+            note(state, "approval_denied_earlier", approval_ref=record["approval_ref"])
+            return record
+        stale = approval_refusal(deps, proposal, record["approval_ref"])
+        if stale is None:
+            note(state, "approval_reused", approval_ref=record["approval_ref"], given_at=record["time"],
+                 now=deps.sim.clock.label(deps.sim.state.tick))
+            return {**record, "reused": True}
+        note(state, "approval_not_reused", approval_ref=record["approval_ref"], reason=stale)
+    if approver is None:  # the scenario's simulated approver answers
+        return require(await gateway.call("request_approval", action=proposal.action, target=proposal.target,
+                                          reason=f"{proposal.reason} ({finding.cause})"[:300], approver_role=role))
+    return await ask_person(gateway, deps, plan, role, approver)
+
+
 async def act(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, plan: Plan, pause_after: str | None,
-              approver: Approver | None = None) -> Outcome:
+              approver: Approver | None = None, crash_at: str | None = None) -> Outcome:
     """Authorize, act once, confirm the effect, verify recovery. Refusals end the attempt with zero effects."""
     finding, proposal = plan.finding, plan.finding.proposal
     denied = authority_refusal(deps, proposal)
@@ -112,12 +156,8 @@ async def act(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, plan: Pla
         denied = await evidence_refusal(gateway, deps, finding)
         if denied:
             raise PolicyRefusal(denied)
-        role = approver_role(deps, proposal)
-        if approver is None:  # the scenario's simulated approver answers
-            approval = require(await gateway.call("request_approval", action=proposal.action, target=proposal.target,
-                                                  reason=f"{proposal.reason} ({finding.cause})"[:300], approver_role=role))
-        else:
-            approval = await ask_person(gateway, deps, plan, role, approver)
+        approval = await obtain_approval(gateway, deps, state, plan, approver_role(deps, proposal), approver)
+        crash_if("approval", crash_at)
         state.set(approval=approval)
         denied = approval_refusal(deps, proposal, approval["approval_ref"])
         if denied:
@@ -126,18 +166,22 @@ async def act(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, plan: Pla
         argument = "instance_id" if proposal.action == "restart_instance" else "change_id"
         await gateway.call(proposal.action, **{argument: proposal.target}, idempotency_key=key,
                            confirmation_ref=approval["approval_ref"])  # the response may be lost: ask the executor below
+        crash_if("action", crash_at)
         known = require(await gateway.call("action_status", idempotency_key=key))
+    else:
+        note(state, "action_already_done", idempotency_key=key, action_id=known.get("action_id"))
     if known.get("status") != "completed":
         raise ToolFailure(f"Executor outcome for {key} is {known.get('status')}; stopping without repeating the action")
     state.set(phase="acted", action=known)
     if pause_after == "action":
         raise Paused("acted")
-    return await check_recovery(gateway, deps, plan, known)
+    return await check_recovery(gateway, deps, plan, known, crash_at)
 
 
-async def check_recovery(gateway: Gateway, deps: IncidentDeps, plan: Plan, known: dict) -> Outcome:
+async def check_recovery(gateway: Gateway, deps: IncidentDeps, plan: Plan, known: dict, crash_at: str | None = None) -> Outcome:
     action = f"{known['action']} {known['target']} ({known['action_id']}, approval {known.get('confirmation_ref')})"
     recovered, refs, detail = await verify(gateway, deps, plan.finding.component, known["tick"], known["action"])
+    crash_if("verify", crash_at)
     if recovered:
         return Outcome("recovered", f"Recovery verified: {detail}.", [action], refs)
     return Outcome("not_recovered", f"The action completed but recovery was not verified: {detail}.", [action], refs,
@@ -146,13 +190,13 @@ async def check_recovery(gateway: Gateway, deps: IncidentDeps, plan: Plan, known
 
 
 async def carry_out(gateway: Gateway, deps: IncidentDeps, state: Checkpoint, plan: Plan, pause_after: str | None,
-                    approver: Approver | None) -> Outcome:
+                    approver: Approver | None, crash_at: str | None = None) -> Outcome:
     """One attempt at the plan's decision."""
     try:
         if state.data["phase"] == "acted":
-            return await check_recovery(gateway, deps, plan, state.data["action"])
+            return await check_recovery(gateway, deps, plan, state.data["action"], crash_at)
         if plan.decision.decision == "act":
-            return await act(gateway, deps, state, plan, pause_after, approver)
+            return await act(gateway, deps, state, plan, pause_after, approver, crash_at)
         if plan.decision.decision == "no_action_needed":
             healthy, refs, detail = await verify(gateway, deps, plan.finding.component, None)
             return (Outcome("resolved", f"No action needed: {detail}.", [], refs) if healthy else
@@ -213,9 +257,12 @@ async def update_tickets(gateway: Gateway, state: Checkpoint, plan: Plan, report
 async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", model: Any = None,
               coordination: str = "orchestrator", resume: bool = False, role: str | None = None,
               pause_after: str | None = None, memory_path: Path | None = None,
-              observe: Callable[[Any], None] | None = None, approver: Approver | None = None) -> dict:
+              observe: Callable[[Any], None] | None = None, approver: Approver | None = None,
+              crash_at: str | None = None, downtime: int = 0) -> dict:
     """Run (or resume) one incident. `observe(tools)` lets the evaluator see the simulated systems.
-    `approver`: a person who answers approval requests; by default the scenario's simulated approver does."""
+    `approver`: a person who answers approval requests; by default the scenario's simulated approver does.
+    `crash_at`: die at that step (see Crash). `downtime`: on resume, simulated minutes that passed while nobody
+    worked; the systems kept running and approvals aged."""
     state = Checkpoint(directory)
     world_path = directory / "world.pkl"
     if resume:
@@ -244,6 +291,10 @@ async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", 
     identity = identity_for(role or state.data.get("role")
                             or load_scenario(directory / "scenario.yaml").actor.get("role", "first-line"))
     tools = load_world(world_path, identity["name"]) if resume else create_world(directory / "scenario.yaml", world_path, identity["name"])
+    if resume:
+        tools.pass_time(downtime)
+        note(state, "resumed", phase=state.data["phase"], downtime_minutes=downtime,
+             at=tools.sim.clock.label(tools.sim.state.tick), role=identity["role"])
     state.set(role=identity["role"], approver="person at the terminal" if approver else "scenario (simulated)")
     if observe:
         observe(tools)
@@ -258,6 +309,9 @@ async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", 
         async with Gateway(tools, state, {"memory.recall": lambda subject: recall(deps, subject)}) as gateway:
             state.set(catalog=gateway.catalog)
             crew = Crew(gateway, deps, brief)
+            if state.data.get("usage"):  # resumed: keep counting from what the earlier process used
+                crew.usage = RunUsage(**state.data["usage"])
+                crew.messages = state.data.get("model_messages", {})
             coordinator = coordinator_for(crew, mode, coordination, model)
             attempts: list[dict] = state.data.get("attempts", [])
             if "plan" in state.data:  # resumed: the coordinator continues from what was already established
@@ -266,20 +320,22 @@ async def run(scenario: Path | None, directory: Path, *, mode: str = "fixture", 
             try:
                 if state.data["phase"] == "start":
                     plan = await coordinator.plan()
+                    record_usage(state, crew)
                     state.set(plan=plan.model_dump(), phase="planned")
                     if pause_after == "plan":
                         raise Paused("planned")
                 if state.data["phase"] != "correcting":
                     plan = Plan.model_validate(state.data["plan"])
-                    outcome = await carry_out(gateway, deps, state, plan, pause_after, approver)
+                    outcome = await carry_out(gateway, deps, state, plan, pause_after, approver, crash_at)
                     if outcome.correction and len(attempts) < MAX_CORRECTIONS:
                         attempts.append({"plan": plan.model_dump(), "outcome": asdict(outcome)})
                         state.set(attempts=attempts, phase="correcting")
                 if state.data["phase"] == "correcting":
                     correction = attempts[-1]["outcome"]["correction"]
                     plan = await coordinator.correct(correction["reason"], tuple(correction["failed"]))
+                    record_usage(state, crew)
                     state.set(plan=plan.model_dump(), phase="planned")
-                    outcome = await carry_out(gateway, deps, state, plan, pause_after, approver)
+                    outcome = await carry_out(gateway, deps, state, plan, pause_after, approver, crash_at)
                 outcome = combined(attempts, outcome)
             except (ToolFailure, ValidationError, AgentRunError, SpecialistFailure) as error:
                 outcome = Outcome("insufficient_information", f"Stopped in a controlled way: {type(error).__name__}: {error}")

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from incident_response.workflow import run
+from incident_response.workflow import Crash, run
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -168,3 +168,61 @@ def test_terminal_prompt_only_approves_an_explicit_yes(monkeypatch, capsys):
         monkeypatch.setattr("builtins.input", lambda _prompt, typed=typed: typed)
         assert terminal_approver(request) is expected
     assert "order-gateway-2" in capsys.readouterr().err
+
+
+def crashed(tmp_path, case, point):
+    with pytest.raises(Crash):
+        execute(tmp_path, case, crash_at=point)
+    return state(tmp_path)
+
+
+def test_crash_after_the_action_then_resume_gives_exactly_one_effect(tmp_path):
+    saved = crashed(tmp_path, "s03-alert-and-ticket", "action")
+    assert saved["phase"] == "planned" and "action" not in saved  # the checkpoint never learned the action ran
+    assert resume(tmp_path)["status"] == "recovered"
+    assert len(effects(tmp_path)) == 1  # the executor's status for the idempotency key decided, not the checkpoint
+    assert [entry["kind"] for entry in state(tmp_path)["resume_log"]] == ["resumed", "action_already_done"]
+
+
+def test_crash_during_verification_then_resume_verifies_again(tmp_path):
+    assert crashed(tmp_path, "s03-alert-and-ticket", "verify")["phase"] == "acted"
+    assert resume(tmp_path)["status"] == "recovered" and len(effects(tmp_path)) == 1
+
+
+def test_crash_after_approval_reuses_it_while_valid(tmp_path):
+    assert "approval" not in crashed(tmp_path, "s02-firewall-change", "approval")
+    assert resume(tmp_path, downtime=5)["status"] == "recovered"
+    saved = state(tmp_path)
+    assert len(saved["approvals"]) == 1 and saved["approval"]["reused"]  # found in the approval service
+    assert "approval_reused" in [entry["kind"] for entry in saved["resume_log"]]
+
+
+def test_crash_after_approval_and_20_minutes_down_asks_again(tmp_path):
+    crashed(tmp_path, "s02-firewall-change", "approval")
+    assert resume(tmp_path, downtime=20)["status"] == "recovered"
+    saved = state(tmp_path)
+    assert [a["approval_ref"] for a in saved["approvals"]] == ["APR-001", "APR-002"]
+    assert [a["confirmation_ref"] for a in effects(tmp_path)] == ["APR-002"]  # acted on the fresh approval only
+    stale = next(entry for entry in saved["resume_log"] if entry["kind"] == "approval_not_reused")
+    assert "expired" in stale["reason"]
+
+
+def test_approval_given_before_the_session_opened_is_not_used_after(tmp_path):
+    from incident_response.contracts import Proposal
+    from incident_response.policy import approval_refusal
+    from incident_response.world import create_world
+    from meridian.agent_runtime import IncidentDeps, identity_for
+
+    scenario = yaml.safe_load((ROOT / "cases/s03-alert-and-ticket.yaml").read_text())
+    scenario["start_time"] = "08:50"
+    path = tmp_path / "early.yaml"
+    path.write_text(yaml.safe_dump(scenario))
+    tools = create_world(path, None, "agent-first-line")
+    deps = IncidentDeps(tools, None, identity_for("first-line"))
+    while tools.sim.clock.label(tools.sim.state.tick) < "08:55":
+        tools.sim.advance(1)
+    proposal = Proposal(action="restart_instance", target="order-gateway-2", reason="x")
+    ref = tools.request_approval(proposal.action, proposal.target, "x", "on-call")["approval_ref"]
+    assert approval_refusal(deps, proposal, ref) is None
+    tools.pass_time(8)  # 09:03: the session is open, the approval is only 8 minutes old
+    assert "before the trading session opened" in approval_refusal(deps, proposal, ref)
