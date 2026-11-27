@@ -168,6 +168,40 @@ Code done (`4488372` … `ba93639`). Only the repeated-evaluation evidence and t
   - The orchestrator hit the 40-request team cap once (s01-market-data-delay r2, 85.7k tokens), which is input for
     the budget monitor.
   - Lesson for the docs: the single run at `e50ec44` (21/22) overstated the result.
+- Tagged `milestone-2` at `0770167` (evidence commit; code at `f791a79`). Pushed by the user.
+
+## Milestone 3 state (27 November 2026)
+
+Code done (`cb89788` … `9d624a6`, then the 0.3.0 version bump). 48 tests pass, fixture 22/22, 0 monitor alerts.
+What remains: the real-model evidence and the tag.
+- `cb89788` Recovery criterion follows the action's runbook (`guards.RECOVERY`): after a rollback, error rate < 1%
+  with the links up.
+- `8cb7d6e` Correction loop (`workflow.carry_out`, `combined`, `MAX_CORRECTIONS = 1`):
+  - after a correctable `PolicyRefusal` or `not_recovered`, `coordinator.correct` runs once;
+  - not after a person's denial, and not for an identity without remediation rights (`correctable=False`);
+  - `attempts` in the checkpoint, and the report summary starts "First attempt (...)";
+  - resume continues `phase="correcting"`, re-seeding the correlation and the exclusions.
+  - Fixture: s02-hidden-config-change now ends `escalated`.
+- `1b457c5` Crash and resume:
+  - `run --crash-at approval|action|verify` raises `Crash(BaseException)`, and the CLI exits 3;
+  - `resume --downtime MIN`;
+  - `obtain_approval` reuses the approval service's record for the same action and target while
+    `policy.validity_refusal` passes (15 minutes, not across the session opening); a denial stands;
+  - `resume_log` records `resumed`, `approval_reused`, `approval_not_reused` and `action_already_done`;
+  - usage and messages are saved after planning and carried across resumes.
+- `c6e21e5` `monitors.py`:
+  - repeated work within an attempt, approval (missing, mismatched, stale, across the session opening), repeated
+    effect, unverified claim, budget;
+  - stored as `checkpoint["monitors"]` and shown in the evaluator columns;
+  - retroactively over the 132 milestone-2 model runs: 0 critical, 27 warnings.
+- `9d624a6` Session 9:
+  - `routed()` wraps the model in a `FallbackModel` when `OPENAI_FALLBACK_MODEL` is set;
+  - `usage_by_agent` and `models_used` are in the checkpoint and in the evaluator rows;
+  - the gateway docstring maps it to session 9 (identity, allowlist, credentials, audit, masking, admission, no cache).
+- Next: the user's OK for `--repeat 3` × orchestrator and pipeline at a clean revision (about $1.6–2), then
+  `evidence/milestone-3/` compared with `evidence/milestone-2/`, then tag `milestone-3`.
+- Watch in the evidence: a correction adds reads and tokens. s02 is capped at 40k input tokens, and the
+  memory-crash deadline is about 22 calls.
 
 ## Plan (in order)
 

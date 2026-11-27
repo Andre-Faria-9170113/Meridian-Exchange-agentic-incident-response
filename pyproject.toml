@@ -1,6 +1,6 @@
 [project]
 name = "meridian-incident-response"
-version = "0.2.0"
+version = "0.3.0"
 description = "Agentic AI final project: Meridian Exchange incident response"
 requires-python = ">=3.10"
 dependencies = [
