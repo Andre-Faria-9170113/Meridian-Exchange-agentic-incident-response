@@ -1,0 +1,15 @@
+{
+  "incident_id": "INC-4102",
+  "status": "escalated",
+  "root_cause": "Errors 503 on order-gateway due to database connection rejected by reference-db, indicated by log error messages. Recent change CHG-4310 on order-gateway (deploy 2.4.0) coincides with the alert timing since 08:50.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T08",
+    "T09"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: Investigator identified the cause as database connection rejections from reference-db related to a recent change in order-gateway, but proposed no immediate action. Reviewer cannot approve lack of action as next step is to investigate the dependency reference-db further. Escalation is required to analyze and mitigate the reference-db issue before more orders are rejected."
+}

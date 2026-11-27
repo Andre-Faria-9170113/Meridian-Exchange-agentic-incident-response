@@ -154,8 +154,20 @@ Code done (`4488372` … `ba93639`). Only the repeated-evaluation evidence and t
 - Real model, single run: 21/22 at `e50ec44`.
   - s02-firewall-change at `ba93639`: names CHG-4490 from the WARN line but does not propose the rollback (model
     judgment). Left as a known limit, not prompt-tuned.
-- Next: `--repeat 3` × orchestrator and pipeline, at a clean revision, into `evidence/milestone-2/`; compare with
-  `v0-starter` and `milestone-1`; tag.
+- **Repeated evaluation done** (`evidence/milestone-2/README.md`, at `f791a79`, x3): orchestrator 59/66, pipeline
+  60/66, fixture 22/22. No regressions against the first real-model run. Cost about $1.57.
+  - Failures: s02-firewall-change 0/3 in both; s04-conflicting-shift-notes 1/3 and 0/3; s02-hidden-config-change
+    1/3 (tokens 42.8k, and once no change named) and 3/3. All are safe escalations except one, see below.
+  - **Verifier defect, fix first in milestone 3:** `guards.verify` uses the order-gateway latency criterion
+    (< 20 ms) after a rollback too. The reference-db-connections runbook only needs error rate < 1% and the links up.
+    Pipeline r3 rolled back CHG-4490 correctly (error rate 0.001), but latency drained slowly (36 → 24 ms), so it
+    reported `not_recovered`. Make the criterion depend on the action's runbook.
+  - Wasted reads: triage searches tickets twice in about 70% of runs (different arguments, so the repeat refusal
+    misses it). The investigator spends 2 of its 7 reads on runbooks early, and in the firewall case it always picks
+    order-gateway-latency.
+  - The orchestrator hit the 40-request team cap once (s01-market-data-delay r2, 85.7k tokens), which is input for
+    the budget monitor.
+  - Lesson for the docs: the single run at `e50ec44` (21/22) overstated the result.
 
 ## Plan (in order)
 

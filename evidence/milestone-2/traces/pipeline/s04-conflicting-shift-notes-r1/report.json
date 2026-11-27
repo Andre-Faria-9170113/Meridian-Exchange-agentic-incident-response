@@ -1,0 +1,17 @@
+{
+  "incident_id": "INC-4102",
+  "status": "escalated",
+  "root_cause": "HTTP 503 errors on order-gateway with reason 'database connection rejected' correspond to errors in logs. The incident correlates with recent changes to reference-db connection settings and order-gateway deployment with connection pooling changes. The logs do not mention any change id explicitly.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09",
+    "T10"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: No safe action within the runbooks: No direct log evidence links rollback to a change. The issue is suspected caused by recent changes on reference-db or order-gateway, so investigate dependencies further before rolling back."
+}

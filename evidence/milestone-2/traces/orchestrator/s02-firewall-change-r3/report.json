@@ -1,0 +1,17 @@
+{
+  "incident_id": "INC-2104",
+  "status": "escalated",
+  "root_cause": "A recent host firewall rules update (CHG-4490) denies egress from order-gateway to reference-db on port 5432, causing the order-gateway to fail requests with high error rate (HTTP 503).",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T05",
+    "T06",
+    "T07",
+    "T09",
+    "T10"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: Investigator found the root cause (firewall rule blocking order-gateway's access to reference-db) and no immediate fix in runbook; reviewer had no action to approve. Escalation is needed to rollback CHG-4490 or work on configuration fix to restore connectivity."
+}

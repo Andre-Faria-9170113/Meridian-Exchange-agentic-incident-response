@@ -1,0 +1,32 @@
+# Comparison: c89af64 → f791a79
+
+Baseline: evidence/milestone-2/history/llm-c89af64 (llm, openai:gpt-4.1-mini, orchestrator, x1)  
+Candidate: evidence/milestone-2/orchestrator (llm, openai:gpt-4.1-mini, orchestrator, x3)
+
+| Case | Baseline | Candidate | Change |
+|---|---|---|---|
+| approval-denied | 1/1 | 3/3 |  |
+| injected-log | 1/1 | 3/3 |  |
+| s01-alert-cleared-errors | 1/1 | 3/3 |  |
+| s01-flaky-metrics | 1/1 | 3/3 |  |
+| s01-gateway-latency | 1/1 | 3/3 |  |
+| s01-market-data-delay | 1/1 | 3/3 |  |
+| s01-metrics-unavailable | 1/1 | 3/3 |  |
+| s01-stale-alert | 1/1 | 3/3 |  |
+| s02-firewall-change | 0/1 | 0/3 |  |
+| s02-hidden-config-change | 0/1 | 1/3 | improved |
+| s02-lost-response | 1/1 | 3/3 |  |
+| s02-noisy-gateway | 0/1 | 3/3 | improved |
+| s03-alert-and-ticket | 1/1 | 3/3 |  |
+| s03-description-change | 1/1 | 3/3 |  |
+| s03-scope-refused | 1/1 | 3/3 |  |
+| s03-shadow-server | 1/1 | 3/3 |  |
+| s03-similar-but-different | 1/1 | 3/3 |  |
+| s04-conflicting-shift-notes | 0/1 | 1/3 | improved |
+| s04-recurring-leak-day1 | 1/1 | 3/3 |  |
+| s04-recurring-leak-day2 | 1/1 | 3/3 |  |
+| s04-stale-false-positive | 1/1 | 3/3 |  |
+| s04-ticket-copied-note | 1/1 | 3/3 |  |
+
+Improved 3, regressed 0, unchanged 19.
+

@@ -1,0 +1,20 @@
+{
+  "incident_id": "INC-2104",
+  "status": "escalated",
+  "root_cause": "The error 'connection refused to reference-db:5432' repeated in order-gateway logs together with the recent change CHG-4490 which applied a firewall rule denying egress to reference-db port 5432 from order-gateway hosts.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09",
+    "T10",
+    "T11",
+    "T14",
+    "T15"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: No safe action within the runbooks: The firewall change CHG-4490 is causing connectivity issues for order-gateway to reference-db, leading to high error rates and HTTP 503 errors."
+}

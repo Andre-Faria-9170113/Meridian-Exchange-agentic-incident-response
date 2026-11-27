@@ -1,0 +1,17 @@
+{
+  "incident_id": "INC-4102",
+  "status": "escalated",
+  "root_cause": "The order-gateway instances are showing repeated HTTP 503 errors with the reason 'database connection rejected'. The error logs are continuous from the earliest to the latest tick in the investigation. The recent change CHG-4310 deployed order-gateway version 2.4.0 with connection pooling changes. This change is temporally correlated with the errors and is the closest relevant active change. Metrics do not indicate memory pressure or CPU overload on the instances; hence, an instance memory cause is excluded. There is no direct log evidence naming the change CHG-4310 to confirm rollback, so rollback is suspected but not confirmed. Dependency health checks are not performed by investigator, so no direct action from the runbook can be applied safely.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09",
+    "T10"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: No safe action within the runbooks: No log message directly names CHG-4310 to allow automatic rollback. Dependency health checks needed first, so no immediate action proposed."
+}

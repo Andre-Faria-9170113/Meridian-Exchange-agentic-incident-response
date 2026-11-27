@@ -1,0 +1,17 @@
+{
+  "incident_id": "INC-2102",
+  "status": "escalated",
+  "root_cause": "order-gateway errors with HTTP 503 are due to rejected database connections, indicating a reference-db dependency issue.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09",
+    "T10"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: The investigator identified a cause related to the order-gateway's dependency on the reference-db but proposed no immediate action. Since no action proposal is present to review, the incident cannot be resolved or marked as no action needed. Escalation is necessary for deeper investigation of the dependency and further corrective steps."
+}

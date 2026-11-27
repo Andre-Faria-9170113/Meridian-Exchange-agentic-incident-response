@@ -1,0 +1,18 @@
+{
+  "incident_id": "INC-2104",
+  "status": "escalated",
+  "root_cause": "A recent change CHG-4490 updated host firewall rules and denied egress to reference-db on port 5432, which may cause the order-gateway to reject orders with HTTP 503 due to inability to communicate with reference-db. This change is explicitly named in a warning log line at the time of the issue.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T05",
+    "T06",
+    "T07",
+    "T08",
+    "T10"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: The investigator identified a probable cause linked to a recent firewall change but did not propose an immediate mitigation action. The reviewer confirmed no action was proposed for review. Therefore, the incident must be escalated for further expert investigation and resolution."
+}

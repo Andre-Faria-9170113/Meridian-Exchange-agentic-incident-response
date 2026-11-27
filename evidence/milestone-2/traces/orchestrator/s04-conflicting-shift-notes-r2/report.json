@@ -1,0 +1,19 @@
+{
+  "incident_id": "INC-4102",
+  "status": "escalated",
+  "root_cause": "Order-gateway error rate is high (30.1%) consistently across instances at 09:10, despite low memory, CPU, and moderate latency (7.5 ms). This suggests internal functional errors rather than resource or dependency failure. The recent active change CHG-4310 deployed order-gateway 2.4.0 with connection pooling changes, which coincides with the timing of the incident. No logs directly link the change to the error but timing implicates CHG-4310 as suspected cause.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T05",
+    "T06",
+    "T07",
+    "T08",
+    "T09",
+    "T10"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: The investigator found a suspected cause (the recent change CHG-4310) but did not propose a concrete mitigation action. The reviewer cannot approve an action that was not proposed. Hence, escalation is needed for further expertise or decision on rollback or other mitigation."
+}

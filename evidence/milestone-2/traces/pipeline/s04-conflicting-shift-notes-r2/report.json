@@ -1,0 +1,17 @@
+{
+  "incident_id": "INC-4102",
+  "status": "escalated",
+  "root_cause": "Logs report multiple ERROR 503 requests failed on order-gateway instances, with the reason being 'database connection rejected', indicating a broken dependency on reference-db or its connections as the root cause of the high error rate.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09",
+    "T10"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: No safe action within the runbooks: The runbook instructs not to restart order-gateway if a dependency is degraded or down. The proper investigation and mitigation should be done on the reference-db component and its connection issues."
+}
