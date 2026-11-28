@@ -1,0 +1,30 @@
+{
+  "incident_id": "INC-3104",
+  "status": "recovered",
+  "root_cause": "The order-gateway-1 instance shows sustained memory usage above 90% with high latency, while order-gateway-2 is normal. No errors or dependency issues found. Restarting a single instance is recommended by the runbook to mitigate latency caused by memory pressure.",
+  "incident_ticket": "MRX-2240",
+  "related_tickets": [
+    "MRX-2240"
+  ],
+  "evidence": [
+    "T04",
+    "T06",
+    "T07",
+    "T08",
+    "T09",
+    "T10",
+    "T11",
+    "T12",
+    "T13",
+    "metrics/order-gateway/41",
+    "metrics/order-gateway/42"
+  ],
+  "actions_taken": [
+    "restart_instance order-gateway-1 (ACT-001, approval APR-001)"
+  ],
+  "refusals": [
+    "Could not comment on MRX-2240: The credentials used for the tickets server do not grant tickets:comment.",
+    "Could not link MRX-2240 to MRX-2240: The credentials used for the tickets server do not grant tickets:link."
+  ],
+  "summary": "Recovery verified: order-gateway healthy in 3 consecutive readings (metrics/order-gateway/42)."
+}

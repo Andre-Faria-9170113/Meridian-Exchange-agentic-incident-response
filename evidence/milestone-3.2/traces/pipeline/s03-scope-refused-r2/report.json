@@ -1,0 +1,28 @@
+{
+  "incident_id": "INC-3104",
+  "status": "recovered",
+  "root_cause": "Instance order-gateway-1 has memory usage consistently above 90% and high latency confirmed by GC pause warnings in the logs, indicating garbage collection delays due to memory pressure.",
+  "incident_ticket": "MRX-2240",
+  "related_tickets": [
+    "MRX-2240"
+  ],
+  "evidence": [
+    "T04",
+    "T06",
+    "T09",
+    "T10",
+    "T11",
+    "T12",
+    "T13",
+    "metrics/order-gateway/41",
+    "metrics/order-gateway/42"
+  ],
+  "actions_taken": [
+    "restart_instance order-gateway-1 (ACT-001, approval APR-001)"
+  ],
+  "refusals": [
+    "Could not comment on MRX-2240: The credentials used for the tickets server do not grant tickets:comment.",
+    "Could not link MRX-2240 to MRX-2240: The credentials used for the tickets server do not grant tickets:link."
+  ],
+  "summary": "Recovery verified: order-gateway healthy in 3 consecutive readings (metrics/order-gateway/42)."
+}

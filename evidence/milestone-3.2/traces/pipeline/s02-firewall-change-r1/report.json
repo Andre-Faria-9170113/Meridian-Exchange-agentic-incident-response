@@ -1,0 +1,22 @@
+{
+  "incident_id": "INC-2104",
+  "status": "escalated",
+  "root_cause": "Host firewall rules update (change CHG-4490) blocked egress to reference-db:5432, causing connection refused errors in order-gateway logs and resulting in high error rate and rejected orders.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09",
+    "T10",
+    "T11",
+    "T12",
+    "T13",
+    "T14",
+    "T15"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: No safe action within the runbooks: The log entry directly links the order-gateway connection errors to the firewall rules update change CHG-4490, rollback needed to restore connectivity."
+}

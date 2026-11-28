@@ -1,0 +1,17 @@
+{
+  "incident_id": "INC-2102",
+  "status": "escalated",
+  "root_cause": "The order-gateway error rate is high (30.1%) but its metrics by instance are not abnormally high in memory or CPU, and no related errors or change logs are found. The healthy range for error_rate is below 1%, so this is a fault without clear metric cause within order-gateway itself.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09",
+    "T10"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: No safe action within the runbooks: No abnormal instance memory usage or dependency issues were found to justify instance restart or rollback; further investigation of dependencies is needed, but that is the reviewer's check."
+}

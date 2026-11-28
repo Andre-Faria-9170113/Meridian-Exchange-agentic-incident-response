@@ -1,0 +1,17 @@
+{
+  "incident_id": "INC-4102",
+  "status": "escalated",
+  "root_cause": "The deployed version 2.4.0 of order-gateway showed high error rate with 503 errors, indicating database connection issues with reference-db. Metrics showed normal memory and cpu usage; no instance memory spike. Logs showed repeated error 503 database connection rejected from order-gateway instances after deployment. No direct rollback evidence for recent changes in logs, but timing strongly suggests the deployed change CHG-4310 is linked.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T05",
+    "T07",
+    "T09",
+    "T10",
+    "T11"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: The investigator identified deployment CHG-4310 causing errors via dependency reference-db but proposed no immediate mitigation due to lack of rollback evidence. No action was proposed for review, so the incident needs escalation for deeper dependency evaluation and potential rollback."
+}

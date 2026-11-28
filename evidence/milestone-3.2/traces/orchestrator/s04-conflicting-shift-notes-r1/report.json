@@ -1,0 +1,17 @@
+{
+  "incident_id": "INC-4102",
+  "status": "escalated",
+  "root_cause": "High error rate (~30%) on order-gateway with stable resource utilization suggests a logical or external cause, possibly related to dependencies. Recent relevant changes include a deployment of order-gateway 2.4.0 (CHG-4310) with no error logs referencing it yet. The no errors or broken dependency found in logs suggests a suspected cause linked to that change.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09",
+    "T10"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: The investigator suspects a cause linked to the recent deployment but proposes no immediate action due to lack of direct evidence. Since a fault exists (error_rate_high with HTTP 503) with no action proposed, escalation is appropriate to gather more data or mitigation steps."
+}

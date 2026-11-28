@@ -1,0 +1,17 @@
+{
+  "incident_id": "INC-4102",
+  "status": "escalated",
+  "root_cause": "Multiple log error messages report 'database connection rejected' causing HTTP 503 errors on order-gateway instances. This indicates the order-gateway depends on reference-db for database connections and that reference-db is rejecting connections, leading to service errors in order-gateway.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T05",
+    "T06",
+    "T07",
+    "T09",
+    "T11"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: The cause of the incident is confirmed to be the reference-db rejecting connections, which causes order-gateway errors. The investigator's runbook-based mitigating advice is to not act on order-gateway itself but to investigate the dependency issue, i.e., reference-db next. Hence, escalation is needed to address the root cause at the reference-db level rather than no action or acting on order-gateway."
+}

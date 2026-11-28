@@ -1,0 +1,16 @@
+{
+  "incident_id": "INC-2104",
+  "status": "escalated",
+  "root_cause": "A firewall rules update (CHG-4490) applied at 14:00 started denying egress from order-gateway to reference-db, causing order-gateway errors and HTTP 503 rejections.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: Investigator found a cause (firewall update blocking reference-db) and no direct internal fault in order-gateway, but also did not propose a mitigation action. Reviewer highlights no action proposed to validate. Therefore, escalation is needed for dependency resolution and mitigation outside order-gateway."
+}

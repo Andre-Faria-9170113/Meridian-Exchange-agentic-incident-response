@@ -1,0 +1,17 @@
+{
+  "incident_id": "INC-4102",
+  "status": "escalated",
+  "root_cause": "No single instance of order-gateway shows high memory usage or latency outside of expected ranges. There are no logs confirming recent changes as direct errors. The active change CHG-4310 involves connection pooling changes and coincides with the onset of errors, making it a suspected cause.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09",
+    "T10"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: No safe action within the runbooks: No logs confirm CHG-4310 as the direct cause, but its timing suggests it may be responsible, so monitoring and further investigation are recommended."
+}

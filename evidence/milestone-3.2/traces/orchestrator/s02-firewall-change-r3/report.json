@@ -1,0 +1,21 @@
+{
+  "incident_id": "INC-2104",
+  "status": "escalated",
+  "root_cause": "Host firewall rules update (change CHG-4490) applied at 14:00 denies egress to reference-db:5432 for order-gateway, causing connection refused errors and high error rate with orders rejected HTTP 503.",
+  "incident_ticket": "MRX-2401",
+  "related_tickets": [],
+  "evidence": [
+    "T04",
+    "T06",
+    "T08",
+    "T09",
+    "T10",
+    "T11",
+    "T13",
+    "T14",
+    "T15"
+  ],
+  "actions_taken": [],
+  "refusals": [],
+  "summary": "Escalated to on-call: The cause of the incident is due to a firewall rule update denying connectivity from order-gateway to reference-db, causing HTTP 503 errors. The proposed rollback is not safe to attempt currently as the link is down, so escalation is needed for further support."
+}
