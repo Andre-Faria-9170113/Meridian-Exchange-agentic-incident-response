@@ -234,6 +234,22 @@ What remains: the real-model evidence and the tag.
 - Over three milestones: pipeline 60, 62, 63; orchestrator 59, 60, 59. The remaining failures are mostly model
   judgment (firewall: no rollback proposed; s04-conflicting: CHG-4471 not named; one triage ticket choice).
 
+## Milestone 3.2 state (28 November 2026): last evaluation before the docs
+
+- **Repeated evaluation** (`evidence/milestone-3.2/README.md`, at `c6a4484`, code `5ead7e4`, x3, $1.57, tag
+  `milestone-3.2` at `5d6efb4`):
+  - orchestrator 58/66, pipeline 63/66, fixture 22/22;
+  - 0 critical alerts, 21 and 23 warnings;
+  - no corrections; max 22 requests.
+- The critical refusal escalated at once in 2 of 6 hidden-config runs (pipeline r2 passed at 31.8k tokens).
+- The instance check never fired on the real model; only the unit test exercises it.
+- The binding constraint is now the s02 token limit: 4 of 24 s02 runs went over 40k, with no correction. The cause is
+  the investigator insisting on dependency metrics: each scope refusal still costs a request. A possible next step,
+  not done, is to withdraw `read_metrics` after the first scope refusal. State it as a limit in the docs.
+- Four evaluations: pipeline 60, 62, 63, 63; orchestrator 59, 60, 59, 58. The pipeline is better on these cases.
+- API credit left: about $5.
+- **Next: the docs (plan step 4). No more code changes planned.**
+
 ## Plan (in order)
 
 0. **The user pushes** `main` and the tags to GitHub. Claude cannot push from here: no credentials.
