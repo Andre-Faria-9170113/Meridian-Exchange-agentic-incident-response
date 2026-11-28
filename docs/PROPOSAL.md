@@ -1,29 +1,86 @@
 # Proposal: Meridian Incident Response
 
-These are optional planning notes. Per the trainer clarification reported by the student, the Meridian introduction can be a verbal explanation of the intended lecture-feature focus; the proposal diagram below is not required. See [FOCUS_TOPICS.md](FOCUS_TOPICS.md) for topics and an example verbal introduction.
+Course 2 final project, *Agentic AI: Da Arquitetura à Implementação*, common proposal (Meridian Exchange).
 
-**Problem.** Meridian operators receive monitoring alerts, internal incidents and member complaints describing degraded exchange services. Manual triage repeats work, and an incorrect restart or rollback can disrupt critical components.
+## Problem
 
-**User.** The operations/on-call engineer responsible for diagnosing incidents, authorizing mitigations and communicating evidence of recovery.
+The Meridian Exchange's operators receive the same incident from several directions: a monitoring alert, an internal
+incident ticket, a member complaint. Each source shows part of the picture. Triage repeats work across shifts, and the
+obvious fix is not always the right one. Restarting a gateway instance does not help when a database limit was lowered
+on another component, and restarting the wrong instance disturbs trading. Some actions touch critical components
+(matching-engine, reference-db), which first-line staff may not change during the trading session.
 
-**Main flow.** Receive the incident; gather bounded monitoring, ticket, runbook and memory context; delegate diagnosis and dependency review; integrate validated findings; check permissions and current evidence; obtain approval; execute a scoped idempotent action; observe recovery; record the result and a qualified memory.
+## User
+
+The **first-line operations engineer** on shift, who must:
+- understand an incident quickly;
+- apply a runbook mitigation when it is safe;
+- prove recovery;
+- otherwise hand over to on-call with the evidence gathered.
+
+The on-call engineer and the incident manager are the approvers. They are also the escalation targets for critical
+components.
+
+## Main flow
+
+1. **Receive** the incident (alert id, summary, time) and select the context: active alerts, open tickets, metrics,
+   logs, recent changes, the applicable runbook and team memory.
+2. **Triage** names the affected component and groups the tickets and complaints about the same problem. Similar words
+   on another component are not enough.
+3. **Investigate:** find the cause from metrics, logs and changes. Propose at most one runbook mitigation, citing the
+   evidence.
+4. **Review:** an independent specialist checks the dependencies, reference-db and the trading session for that exact
+   proposal.
+5. **Decide:** act, no action needed, or escalate. An orchestrator agent decides, or a fixed pipeline in code.
+6. **Authorize in code:**
+   - the role may act on the target;
+   - fresh readings still justify the action;
+   - a person (or the scenario's approver) approves that exact action and target.
+7. **Act once**, with an idempotency key, then confirm the effect with the executor.
+8. **Verify recovery** against the runbook's criterion. If the action is refused or recovery is not verified, make one
+   correction attempt, then review again.
+9. **Record:**
+   - comment on the incident ticket (or open one) and link the related tickets;
+   - write a code-built memory of the verified recovery for the next shift;
+   - produce a report with the cited evidence.
+
+Every step is checkpointed. An interrupted run resumes from the systems' history, without repeating an effect and
+without reusing an approval that is no longer valid.
 
 ```mermaid
 flowchart LR
-    I[Alert / ticket / complaint] --> O[Orchestrator]
-    O --> G[Gateway investigator]
-    G --> S[Dependency and safety reviewer]
-    S --> O
-    O --> P[Policy and approval]
-    P --> A[Scoped mitigation]
-    A --> V[Recovery verification]
-    V --> R[Report and handover memory]
+    I[Alert / ticket / complaint] --> O{{Coordinator<br/>orchestrator or pipeline}}
+    O -->|question| T[Triage<br/>alerts, tickets via MCP]
+    O -->|question + triage| V[Investigator<br/>metrics, logs, changes,<br/>runbooks, memory]
+    O -->|exact proposal| R[Reviewer<br/>links, reference-db,<br/>trading session]
+    O --> D[Decision]
+    D --> C[Code: authority -> fresh evidence -> approval]
+    C --> X[Act once<br/>idempotency key -> executor status]
+    X --> W{Recovery verified?}
+    W -->|no, or refused| O
+    W -->|yes| K[Ticket + memory + report]
 ```
 
-**Initial scope.** The provided starter mitigates a single unhealthy order-gateway instance. The final scope should add justified source correlation and at least one additional incident/remediation family, with evaluations matching the brief. That additional-family suggestion is an engineering recommendation, not a separately stated numerical minimum in the PDF.
+## Scope and boundaries
 
-**Boundaries.** Synthetic local exchange only. No real trading, production infrastructure or external ticket writes. A CLI is sufficient. Critical targets remain behind code permissions and approval. Missing evidence causes escalation rather than an unsupported recovery claim.
+- Synthetic exchange only: the course's Meridian simulator, tools and MCP servers, run locally. No real trading,
+  infrastructure or external ticket system.
+- Two mitigations: restart one gateway instance, or roll back one change. Whole-service restarts are never exposed.
+- A command-line interface. The person approves at the terminal (`--approver interactive`), or the scenario's
+  simulated approver answers.
+- Model keys live only in `.env`. The offline mode (`--mode fixture`) runs every case with no model.
 
-**Success evidence.** A multi-source incident recovered with fresh metrics; a forbidden/refused action with zero effects; a lost action response reconciled; work resumed after interruption with no duplicated mitigation; relevant memory recalled and stale/cross-team memory excluded; version comparisons over fixed seeded cases.
+## How success is shown
 
-**Architecture decisions to validate.** Use two focused read-only specialists, a typed orchestration boundary, deterministic mutation guards and a separate verification stage. Start with preselected context to keep costs and failure modes inspectable. Extend investigation routing only where evaluation shows it helps.
+The 20 public course cases and two project cases, each with the course's own checks, run three times per
+coordination at each milestone. Every evaluation starts from the same cases and the same initial state. The cases
+cover:
+- a multi-source incident recovered and verified;
+- missing metrics and a failing service, both ending in a controlled stop;
+- a refused action with zero effects;
+- an injected instruction in a log;
+- a lost action response, a crash and resume with exactly one effect;
+- memory across two shifts;
+- tool catalog changes and lost permissions.
+
+See [EVALUATION.md](EVALUATION.md) for the results.
