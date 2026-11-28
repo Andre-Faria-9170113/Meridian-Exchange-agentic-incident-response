@@ -248,7 +248,24 @@ What remains: the real-model evidence and the tag.
   not done, is to withdraw `read_metrics` after the first scope refusal. State it as a limit in the docs.
 - Four evaluations: pipeline 60, 62, 63, 63; orchestrator 59, 60, 59, 58. The pipeline is better on these cases.
 - API credit left: about $5.
-- **Next: the docs (plan step 4). No more code changes planned.**
+- No more code changes planned.
+
+## Docs and clean clone (28 November 2026)
+
+- `faa0d21`:
+  - the final README;
+  - docs/PROPOSAL, ARCHITECTURE (12 decisions with evidence, routing and fallback, monitors, session map),
+    EVALUATION (cases, per-case results by version, failures, limits), DEMO (10-minute script, commands run and
+    outputs quoted).
+- `77cc96c`: the starter's docs and `evidence/fixture-baseline/` deleted (the user agreed).
+- Clean clone tested from a local clone:
+  - uv sync, 51 tests, the s03 demo, fixture 22/22, catalog review and compare all work;
+  - `requirements.lock` installs with `--require-hashes` into a fresh venv, and the tests pass;
+  - this machine lacks `python3.10-venv`, so plain `python -m venv` could not be tried.
+- **Remaining (plan step 5):**
+  - the user reviews the AI-assistance wording;
+  - tag `final`;
+  - the user pushes and checks the repository while signed out.
 
 ## Plan (in order)
 
